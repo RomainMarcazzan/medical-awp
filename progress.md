@@ -36,6 +36,7 @@
       - Makes an HTTP POST request to `http://localhost:11434/api/chat`.
       - Parses the response and returns the AI's message content.
       - Includes basic error handling and logging.
+      - [x] (Optional) Modify to support streaming responses from Ollama (`stream: true`).
   - **`frontend/src/App.tsx` (or equivalent):**
     - [x] Create state for input text and messages array.
     - [x] Create an input field for the user to type messages.
@@ -43,7 +44,9 @@
     - [x] On send, call the Go `HandleMessage` function via `window.go.main.App.HandleMessage(inputText)`.
     - [x] Add the user's message and the AI's response to the messages array.
     - [x] Render the messages array in a chat-like interface.
-- [ ] **Test Basic Chat:**
+    - [x] (Optional) Implement a loading indicator while waiting for AI response.
+    - [x] (Optional) Update to handle streaming AI responses if implemented in backend.
+- [x] **Test Basic Chat:**
   - Run `wails dev`.
   - Ensure you can send messages and receive responses from Ollama.
 

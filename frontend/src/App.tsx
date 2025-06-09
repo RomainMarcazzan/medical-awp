@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import { HandleMessage } from "../wailsjs/go/main/App";
+import { EventsOn } from "../wailsjs/runtime"; // Import EventsOn
 
 interface Message {
   id: number;
@@ -8,9 +9,18 @@ interface Message {
   sender: "user" | "ai";
 }
 
+// Define the structure of the event payload from Go
+interface OllamaStreamEventPayload {
+  content?: string; // content can be empty, especially in the final 'done' message
+  done: boolean;
+  error?: string;
+}
+
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState("");
+  const [isLoading, setIsLoading] = useState(false); // Loading state
+  const currentAiMessageIdRef = useRef<number | null>(null); // To track the ID of the AI message being streamed
   const messageEndRef = useRef<null | HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -19,35 +29,116 @@ function App() {
 
   useEffect(scrollToBottom, [messages]);
 
+  // Listen for streaming events from Go
+  useEffect(() => {
+    const unsubscribe = EventsOn("ollamaStreamEvent", (data: OllamaStreamEventPayload) => {
+      // Ensure data is not undefined and has the expected structure
+      if (typeof data !== "object" || data === null) {
+        console.error("Received malformed stream event data:", data);
+        if (currentAiMessageIdRef.current !== null) {
+          setMessages((prevMessages) =>
+            prevMessages.map((msg) =>
+              msg.id === currentAiMessageIdRef.current
+                ? { ...msg, text: msg.text + "\\n[Error: Malformed stream event]" }
+                : msg
+            )
+          );
+        }
+        setIsLoading(false);
+        currentAiMessageIdRef.current = null;
+        return;
+      }
+
+      if (data.error) {
+        console.error("Streaming Error from Go:", data.error);
+        if (currentAiMessageIdRef.current !== null) {
+          setMessages((prevMessages) =>
+            prevMessages.map((msg) =>
+              msg.id === currentAiMessageIdRef.current
+                ? { ...msg, text: (msg.text || "") + `\\n[Error: ${data.error}]` }
+                : msg
+            )
+          );
+        }
+        setIsLoading(false);
+        currentAiMessageIdRef.current = null;
+        return;
+      }
+
+      if (currentAiMessageIdRef.current !== null && typeof data.content === "string") {
+        setMessages((prevMessages) =>
+          prevMessages.map((msg) =>
+            msg.id === currentAiMessageIdRef.current
+              ? { ...msg, text: (msg.text || "") + data.content } // Append content
+              : msg
+          )
+        );
+      }
+
+      if (data.done) {
+        setIsLoading(false);
+        currentAiMessageIdRef.current = null;
+        console.log("Streaming finished.");
+      }
+    });
+
+    // Cleanup listener on component unmount
+    return () => {
+      // Wails V2 EventsOn returns a function to unsubscribe
+      unsubscribe();
+    };
+  }, []); // Empty dependency array means this runs once on mount and cleans up on unmount
+
   const handleSendMessage = async () => {
-    if (inputText.trim() === "") {
+    if (inputText.trim() === "" || isLoading) {
+      // Prevent sending if already loading
       return;
     }
+    setIsLoading(true);
+
     const newUserMessage: Message = {
       id: Date.now(),
       text: inputText,
       sender: "user",
     };
 
-    setMessages((prevMessages) => [...prevMessages, newUserMessage]);
+    const newAiMessageId = Date.now() + 1;
+    currentAiMessageIdRef.current = newAiMessageId;
+    const newAiMessagePlaceholder: Message = {
+      id: newAiMessageId,
+      text: "", // Initially empty, will be filled by stream
+      sender: "ai",
+    };
+
+    // Add user message and AI placeholder to state
+    // Use a functional update to ensure we're working with the latest state
+    setMessages((prevMessages) => [...prevMessages, newUserMessage, newAiMessagePlaceholder]);
+
+    const currentInput = inputText;
     setInputText("");
 
     try {
-      const aiResponseText = await HandleMessage(inputText);
-      const newAiMessage: Message = {
-        id: Date.now() + 1,
-        text: aiResponseText,
-        sender: "ai",
-      };
-      setMessages((prevMessages) => [...prevMessages, newAiMessage]);
+      const initialResponse = await HandleMessage(currentInput);
+      if (initialResponse) {
+        // Non-empty string indicates an error from Go before streaming
+        console.error("Error from HandleMessage (Go):", initialResponse);
+        setMessages((prevMessages) =>
+          prevMessages.map((msg) => (msg.id === newAiMessageId ? { ...msg, text: initialResponse } : msg))
+        );
+        setIsLoading(false);
+        currentAiMessageIdRef.current = null;
+      }
+      // If initialResponse is empty, streaming has started or will start.
+      // The EventsOn listener handles further updates and setting isLoading to false.
     } catch (error) {
-      console.error("Error calling HandleMessage", error);
-      const errorAiMessage: Message = {
-        id: Date.now() + 1,
-        text: "Sorry I couldn't process your message",
-        sender: "ai",
-      };
-      setMessages((prevMessages) => [...prevMessages, errorAiMessage]);
+      console.error("Error calling HandleMessage (JS):", error);
+      setMessages((prevMessages) =>
+        prevMessages.map((msg) =>
+          msg.id === newAiMessageId ? { ...msg, text: "Sorry, an error occurred while sending your message." } : msg
+        )
+      );
+      setIsLoading(false);
+      currentAiMessageIdRef.current = null;
     }
   };
 
@@ -57,9 +148,18 @@ function App() {
         <div className="message-list">
           {messages.map((msg) => (
             <div key={msg.id} className={`message ${msg.sender}`}>
-              <p>{msg.text}</p>
+              {/* Render text with preserved newlines */}
+              <p style={{ whiteSpace: "pre-wrap" }}>{msg.text}</p>
             </div>
           ))}
+          {isLoading &&
+            currentAiMessageIdRef.current === null && ( // Show general loader if AI message isn't created yet
+              <div className="message ai">
+                <p>
+                  <i>Preparing response...</i>
+                </p>
+              </div>
+            )}
           <div ref={messageEndRef} />
         </div>
         <div className="input-area">
@@ -68,10 +168,11 @@ function App() {
             className="chat-input"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+            onKeyDown={(e) => e.key === "Enter" && !isLoading && handleSendMessage()}
             placeholder="Type your message..."
+            disabled={isLoading}
           />
-          <button className="send-button" onClick={handleSendMessage}>
+          <button className="send-button" onClick={handleSendMessage} disabled={isLoading}>
             Send
           </button>
         </div>

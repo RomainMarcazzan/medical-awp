@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,16 +9,37 @@ import (
 	"io"
 	"log"
 	"net/http"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+const (
+	ollamaApiUrl       = "http://localhost:11434/api" // Base URL for Ollama API
+	chatModelName      = "llama3"                     // Model for chat completions
+	embeddingModelName = "nomic-embed-text"           // Model for generating embeddings
+)
+
+// DocumentChunk defines the structure for a piece of text from a document.
+type DocumentChunk struct {
+	ID         int       `json:"id"`
+	Text       string    `json:"text"`
+	Embedding  []float64 `json:"embedding"`   // Stores the vector embedding of the text
+	SourceFile string    `json:"source_file"` // Original file this chunk came from
+}
 
 // App struct
 type App struct {
-	ctx context.Context
+	ctx            context.Context
+	documentStore  []DocumentChunk
+	nextDocumentID int
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{}
+	return &App{
+		documentStore:  make([]DocumentChunk, 0),
+		nextDocumentID: 1,
+	}
 }
 
 // startup is called when the app starts. The context is saved
@@ -44,72 +66,152 @@ type OllamaChatRequest struct {
 	Stream   bool                `json:"stream"`
 }
 
-// OllamaChatResponse defines the structure for the Ollama API chat response
+// OllamaChatResponse defines the structure for each chunk in the Ollama API stream
 type OllamaChatResponse struct {
 	Model     string            `json:"model"`
 	CreatedAt string            `json:"created_at"`
 	Message   OllamaChatMessage `json:"message"`
 	Done      bool              `json:"done"`
+	// Other fields like total_duration, etc., appear in the final 'done' chunk
+}
+
+// OllamaStreamEvent is the payload sent to the frontend for each stream event
+type OllamaStreamEvent struct {
+	Content string `json:"content,omitempty"`
+	Done    bool   `json:"done"`
+	Error   string `json:"error,omitempty"`
+}
+
+// OllamaEmbeddingRequest defines the structure for the Ollama API embedding request
+type OllamaEmbeddingRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+}
+
+// OllamaEmbeddingResponse defines the structure for the Ollama API embedding response
+type OllamaEmbeddingResponse struct {
+	Embedding []float64 `json:"embedding"`
+}
+
+// getOllamaEmbedding calls the Ollama API to get an embedding for the given text.
+func (a *App) getOllamaEmbedding(text string) ([]float64, error) {
+	log.Printf("Requesting embedding for text: %s...", text[:min(len(text), 100)]) // Log first 100 chars
+
+	requestBody := OllamaEmbeddingRequest{
+		Model:  embeddingModelName,
+		Prompt: text,
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		log.Printf("Error marshalling embedding request body: %v", err)
+		return nil, fmt.Errorf("could not process embedding request (marshal): %w", err)
+	}
+
+	apiEndpoint := ollamaApiUrl + "/embeddings"
+	log.Printf("Sending embedding request to Ollama: %s", string(jsonBody))
+
+	resp, err := http.Post(apiEndpoint, "application/json", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		log.Printf("Error making POST request to Ollama for embeddings: %v", err)
+		return nil, fmt.Errorf("could not connect to Ollama service for embeddings: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		responseBodyBytes, _ := io.ReadAll(resp.Body)
+		log.Printf("Ollama embeddings API responded with status: %s - %s", resp.Status, string(responseBodyBytes))
+		return nil, fmt.Errorf("Ollama embeddings API error (%s): %s", resp.Status, string(responseBodyBytes))
+	}
+
+	var ollamaEmbeddingResp OllamaEmbeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ollamaEmbeddingResp); err != nil {
+		log.Printf("Error unmarshalling embedding response: %v", err)
+		return nil, fmt.Errorf("could not parse Ollama embedding response: %w", err)
+	}
+
+	log.Printf("Successfully received embedding of dimension: %d", len(ollamaEmbeddingResp.Embedding))
+	return ollamaEmbeddingResp.Embedding, nil
 }
 
 func (a *App) HandleMessage(userInput string) string {
 	log.Printf("Received message from user: %s", userInput)
 
-	ollamaApiUrl := "http://localhost:11434/api/chat"
-	chatModelName := "llama3" // As defined in progress.md
+	// Use package-level constants
+	// ollamaApiUrl is now a const: ollamaApiUrl
+	// chatModelName is now a const: chatModelName
 
 	requestBody := OllamaChatRequest{
-		Model: chatModelName,
+		Model: chatModelName, // Use const
 		Messages: []OllamaChatMessage{
 			{
 				Role:    "user",
 				Content: userInput,
 			},
 		},
-		Stream: false,
+		Stream: true, // Enable streaming
 	}
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
 		log.Printf("Error marshalling request body: %v", err)
-		return "Error: Could not process your request."
+		return "Error: Could not process your request (marshal)."
 	}
 
 	log.Printf("Sending request to Ollama: %s", string(jsonBody))
 
-	resp, err := http.Post(ollamaApiUrl, "application/json", bytes.NewBuffer(jsonBody))
+	resp, err := http.Post(ollamaApiUrl+"/chat", "application/json", bytes.NewBuffer(jsonBody)) // Adjusted to use base const
 	if err != nil {
 		log.Printf("Error making POST request to Ollama: %v", err)
 		return "Error: Could not connect to Ollama service."
 	}
-	defer resp.Body.Close()
-
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("Error reading Ollama response body: %v", err)
-		return "Error: Could not read response from Ollama."
-	}
-
-	log.Printf("Received response from Ollama: Status %s, Body: %s", resp.Status, string(responseBody))
+	// Defer closing body in the goroutine after it's done with it.
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("Ollama API responded with status: %s - %s", resp.Status, string(responseBody))
+		responseBodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close() // Close body here as we are not streaming it
+		log.Printf("Ollama API responded with status: %s - %s", resp.Status, string(responseBodyBytes))
 		return fmt.Sprintf("Error: Ollama service responded with an error (%s).", resp.Status)
 	}
 
-	var ollamaResponse OllamaChatResponse
-	err = json.Unmarshal(responseBody, &ollamaResponse)
-	if err != nil {
-		log.Printf("Error unmarshalling Ollama response: %v", err)
-		log.Printf("Ollama raw response: %s", string(responseBody))
-		return "Error: Could not parse response from Ollama."
-	}
+	// Process the stream in a goroutine
+	go func() {
+		defer resp.Body.Close() // Ensure body is closed when goroutine finishes
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadBytes('\n') // Corrected: use '\n' instead of '\\n'
+			if err != nil {
+				if err == io.EOF {
+					log.Println("Stream finished (EOF).")
+					// Ensure a final 'done' event is sent if not already by Ollama
+					runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{Done: true})
+					break
+				}
+				log.Printf("Error reading stream: %v", err)
+				runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{Error: "Error reading stream: " + err.Error(), Done: true})
+				break
+			}
 
-	if ollamaResponse.Message.Content == "" {
-		log.Printf("Ollama response message content is empty. Full response: %+v", ollamaResponse)
-		return "Error: Received an empty message from Ollama."
-	}
+			var ollamaChunk OllamaChatResponse
+			if err := json.Unmarshal(line, &ollamaChunk); err != nil {
+				log.Printf("Error unmarshalling stream chunk '%s': %v", string(line), err)
+				// Optionally send an error event or try to continue
+				// runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{Error: "Error parsing chunk.", Done: true})
+				continue
+			}
 
-	log.Printf("AI Response: %s", ollamaResponse.Message.Content)
-	return ollamaResponse.Message.Content
+			log.Printf("Sending chunk to frontend: '%s' (Done: %v)", ollamaChunk.Message.Content, ollamaChunk.Done)
+			runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{
+				Content: ollamaChunk.Message.Content,
+				Done:    ollamaChunk.Done,
+			})
+
+			if ollamaChunk.Done {
+				log.Println("Stream officially done according to Ollama chunk.")
+				break
+			}
+		}
+	}()
+
+	return "" // Indicate success, streaming handled by events
 }
