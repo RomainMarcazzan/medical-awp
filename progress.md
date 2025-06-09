@@ -167,6 +167,8 @@
 - [ ] **Comprehensive Testing:**
   - [ ] Test RAG source display thoroughly.
   - [ ] Test with various `.txt` files (empty, large, different encodings if applicable).
+    - [x] Empty files
+    - [x] Large files
   - [ ] Test with different folder structures.
   - [ ] Test edge cases for chunking and embedding.
   - [ ] Test error handling for Ollama API calls (e.g., Ollama service down, model not available).
