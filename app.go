@@ -82,58 +82,6 @@ type OllamaStreamEvent struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// OllamaEmbeddingRequest defines the structure for the Ollama API embedding request
-type OllamaEmbeddingRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-}
-
-// OllamaEmbeddingResponse defines the structure for the Ollama API embedding response
-type OllamaEmbeddingResponse struct {
-	Embedding []float64 `json:"embedding"`
-}
-
-// getOllamaEmbedding calls the Ollama API to get an embedding for the given text.
-func (a *App) getOllamaEmbedding(text string) ([]float64, error) {
-	log.Printf("Requesting embedding for text: %s...", text[:min(len(text), 100)]) // Log first 100 chars
-
-	requestBody := OllamaEmbeddingRequest{
-		Model:  embeddingModelName,
-		Prompt: text,
-	}
-
-	jsonBody, err := json.Marshal(requestBody)
-	if err != nil {
-		log.Printf("Error marshalling embedding request body: %v", err)
-		return nil, fmt.Errorf("could not process embedding request (marshal): %w", err)
-	}
-
-	apiEndpoint := ollamaApiUrl + "/embeddings"
-	log.Printf("Sending embedding request to Ollama: %s", string(jsonBody))
-
-	resp, err := http.Post(apiEndpoint, "application/json", bytes.NewBuffer(jsonBody))
-	if err != nil {
-		log.Printf("Error making POST request to Ollama for embeddings: %v", err)
-		return nil, fmt.Errorf("could not connect to Ollama service for embeddings: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		responseBodyBytes, _ := io.ReadAll(resp.Body)
-		log.Printf("Ollama embeddings API responded with status: %s - %s", resp.Status, string(responseBodyBytes))
-		return nil, fmt.Errorf("Ollama embeddings API error (%s): %s", resp.Status, string(responseBodyBytes))
-	}
-
-	var ollamaEmbeddingResp OllamaEmbeddingResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ollamaEmbeddingResp); err != nil {
-		log.Printf("Error unmarshalling embedding response: %v", err)
-		return nil, fmt.Errorf("could not parse Ollama embedding response: %w", err)
-	}
-
-	log.Printf("Successfully received embedding of dimension: %d", len(ollamaEmbeddingResp.Embedding))
-	return ollamaEmbeddingResp.Embedding, nil
-}
-
 func (a *App) HandleMessage(userInput string) string {
 	log.Printf("Received message from user: %s", userInput)
 
