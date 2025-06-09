@@ -10,11 +10,13 @@ import (
 	"log"
 	"math" // Added for math.Sqrt
 	"net/http"
-	"os"            // Added for file system operations
-	"path/filepath" // Added for path manipulation
-	"sort"          // Added for sorting slices
-	"strings"       // Added for strings.Fields
+	"os"
+	"path/filepath"
+	"sort" // Added for sort.Slice
+	"strings"
+	"sync" // Added for mutex
 
+	"github.com/go-ole/go-ole"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -30,6 +32,7 @@ type DocumentChunk struct {
 	Text       string    `json:"text"`
 	Embedding  []float64 `json:"embedding"`   // Stores the vector embedding of the text
 	SourceFile string    `json:"source_file"` // Original file this chunk came from
+	Score      float64   // Added Score field for ranking
 }
 
 // App struct
@@ -37,13 +40,15 @@ type App struct {
 	ctx            context.Context
 	documentStore  []DocumentChunk
 	nextDocumentID int
+	mu             sync.Mutex // Mutex to protect documentStore and nextDocumentID
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{
-		documentStore:  make([]DocumentChunk, 0),
-		nextDocumentID: 1,
+		documentStore:  make([]DocumentChunk, 0), // Initialize documentStore
+		nextDocumentID: 1,                        // Initialize nextDocumentID
+		// mu will be zero-valued, which is ready for use
 	}
 }
 
@@ -51,6 +56,21 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	// Initialize COM for this goroutine (which Wails ensures is the main OS thread for startup)
+	// COINIT_APARTMENTTHREADED is generally required for UI elements like dialogs.
+	err := ole.CoInitializeEx(0, ole.COINIT_APARTMENTTHREADED)
+	if err != nil {
+		log.Printf("FATAL: Failed to initialize COM: %v. Dialogs will not work.", err)
+		// Depending on how critical dialogs are, you might panic or os.Exit here.
+	} else {
+		log.Println("COM initialized successfully for the main application thread.")
+	}
+}
+
+// shutdown is called when the app is shutting down.
+func (a *App) shutdown(_ context.Context) { // Changed ctx to _
+	log.Println("App shutting down. Uninitializing COM.")
+	ole.CoUninitialize() // Uninitialize COM for this thread
 }
 
 // Greet returns a greeting for the given name
@@ -59,7 +79,9 @@ func (a *App) Greet(name string) string {
 }
 
 // OllamaChatMessage defines the structure for a message in the Ollama API
-type OllamaChatMessage struct {
+// Renamed from OllamaMessage to avoid conflict if there was a global one.
+// If OllamaMessage was already defined as this, then this definition is fine
+type OllamaChatMessage struct { // Ensure this type is used consistently, or rename if it was OllamaMessage globally
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
@@ -67,17 +89,17 @@ type OllamaChatMessage struct {
 // OllamaChatRequest defines the structure for the Ollama API chat request
 type OllamaChatRequest struct {
 	Model    string              `json:"model"`
-	Messages []OllamaChatMessage `json:"messages"`
+	Messages []OllamaChatMessage `json:"messages"` // Uses the locally defined OllamaChatMessage
 	Stream   bool                `json:"stream"`
 }
 
 // OllamaChatResponse defines the structure for each chunk in the Ollama API stream
-type OllamaChatResponse struct {
+// Renamed from OllamaStreamResponse to avoid conflict if there was a global one.
+type OllamaChatResponse struct { // Ensure this type is used consistently
 	Model     string            `json:"model"`
 	CreatedAt string            `json:"created_at"`
-	Message   OllamaChatMessage `json:"message"`
+	Message   OllamaChatMessage `json:"message"` // Uses the locally defined OllamaChatMessage
 	Done      bool              `json:"done"`
-	// Other fields like total_duration, etc., appear in the final 'done' chunk
 }
 
 // OllamaStreamEvent is the payload sent to the frontend for each stream event
@@ -127,7 +149,7 @@ func (a *App) getOllamaEmbedding(text string) ([]float64, error) {
 	if resp.StatusCode != http.StatusOK {
 		responseBodyBytes, _ := io.ReadAll(resp.Body)
 		log.Printf("Ollama embeddings API responded with status: %s - %s", resp.Status, string(responseBodyBytes))
-		return nil, fmt.Errorf("Ollama embeddings API error (%s): %s", resp.Status, string(responseBodyBytes))
+		return nil, fmt.Errorf("ollama embeddings API error (%s): %s", resp.Status, string(responseBodyBytes))
 	}
 
 	var ollamaEmbeddingResp OllamaEmbeddingResponse
@@ -190,65 +212,96 @@ func chunkText(text string, chunkSize int, overlap int) []string {
 	return chunks
 }
 
-// LoadPersonalData is a Wails-bindable method that processes .txt files from a directory,
-// chunks them, generates embeddings, and stores them in memory.
-func (a *App) LoadPersonalData(directoryPath string) string {
-	log.Printf("Starting to load personal data from directory: %s", directoryPath)
-	a.documentStore = make([]DocumentChunk, 0) // Clear existing store
-	a.nextDocumentID = 1                       // Reset ID counter
+// LoadPersonalData is a Wails-bindable method that prompts the user to select a directory,
+// then processes .txt files from that directory, chunks them, generates embeddings, and stores them in memory.
+func (a *App) LoadPersonalData() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
+	log.Println("LoadPersonalData called. Prompting user to select a directory.")
+	dialogOptions := runtime.OpenDialogOptions{
+		Title:            "Select Folder Containing Your Documents",
+		DefaultDirectory: "C:\\\\", // Set a simple, known valid default directory
+		// ShowHiddenFiles: false, // Optional
+	}
+
+	directoryPath, err := runtime.OpenDirectoryDialog(a.ctx, dialogOptions)
+	if err != nil {
+		// Check if the error is the specific "shellItem is nil" which we treat as cancellation on Windows
+		// This can happen if the user closes the dialog (e.g. with ESC or 'X')
+		if err.Error() == "shellItem is nil" {
+			statusMsg := "Document loading cancelled by user (dialog closed)."
+			log.Println(statusMsg)
+			return statusMsg // Return a user-friendly message
+		}
+		// For other errors, report them
+		errMsg := fmt.Sprintf("error opening directory dialog: %v", err)
+		log.Println(errMsg)
+		return errMsg
+	}
+
+	if directoryPath == "" {
+		// This case handles cancellation where err is nil but path is empty (e.g., user presses the "Cancel" button if available, or selects nothing and clicks "OK")
+		statusMsg := "Document loading cancelled by user (no directory selected)."
+		log.Println(statusMsg)
+		return statusMsg
+	}
+
+	log.Printf("User selected directory: %s. Starting to load personal data.", directoryPath)
+
+	// Clear existing document store and reset ID under lock
+	a.documentStore = make([]DocumentChunk, 0)
+	a.nextDocumentID = 1
 	filesProcessed := 0
-	totalChunksLoaded := 0
+	chunksLoaded := 0
 
-	// Recommended way to read directory contents in Go
 	dirEntries, err := os.ReadDir(directoryPath)
 	if err != nil {
-		log.Printf("Error reading directory %s: %v", directoryPath, err)
-		return fmt.Sprintf("Error reading directory: %v", err)
+		errMsg := fmt.Sprintf("error reading directory %s: %v", directoryPath, err) // Changed: "Error" to "error"
+		log.Println(errMsg)
+		return errMsg
 	}
 
 	for _, entry := range dirEntries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".txt" {
-			continue // Skip directories and non-.txt files
-		}
+		if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".txt") {
+			filePath := filepath.Join(directoryPath, entry.Name())
+			log.Printf("Processing file: %s", filePath)
 
-		fileName := entry.Name()
-		filePath := filepath.Join(directoryPath, fileName)
-		log.Printf("Processing file: %s", filePath)
-
-		content, err := os.ReadFile(filePath)
-		if err != nil {
-			log.Printf("Error reading file %s: %v", filePath, err)
-			continue // Skip this file
-		}
-
-		// Define chunking parameters (could be made configurable later)
-		chunkSize := 200
-		overlap := 50
-		textChunks := chunkText(string(content), chunkSize, overlap)
-
-		for i, chunkText := range textChunks {
-			log.Printf("Processing chunk %d/%d for file %s (length: %d)", i+1, len(textChunks), fileName, len(chunkText))
-			embedding, err := a.getOllamaEmbedding(chunkText)
+			content, err := os.ReadFile(filePath)
 			if err != nil {
-				log.Printf("Error getting embedding for chunk from %s: %v. Skipping chunk.", fileName, err)
-				continue // Skip this chunk
+				log.Printf("Error reading file %s: %v. Skipping.", filePath, err)
+				continue // Skip this file and continue with the next
 			}
 
-			docChunk := DocumentChunk{
-				ID:         a.nextDocumentID,
-				Text:       chunkText,
-				Embedding:  embedding,
-				SourceFile: fileName,
+			// Define chunking parameters (could be made configurable later)
+			chunkSizeWords := 200 // Example: 200 words per chunk
+			overlapWords := 20    // Example: 20 words overlap
+
+			textChunks := chunkText(string(content), chunkSizeWords, overlapWords)
+			log.Printf("File %s split into %d chunks.", filePath, len(textChunks))
+
+			for _, chunkText := range textChunks {
+				embedding, err := a.getOllamaEmbedding(chunkText)
+				if err != nil {
+					log.Printf("Error getting embedding for a chunk from %s: %v. Skipping chunk.", filePath, err)
+					continue // Skip this chunk
+				}
+
+				newChunk := DocumentChunk{
+					ID:         a.nextDocumentID,
+					Text:       chunkText,
+					Embedding:  embedding,
+					SourceFile: entry.Name(), // Store just the file name as source
+				}
+				a.documentStore = append(a.documentStore, newChunk)
+				a.nextDocumentID++
+				chunksLoaded++
 			}
-			a.documentStore = append(a.documentStore, docChunk)
-			a.nextDocumentID++
-			totalChunksLoaded++
+			filesProcessed++
 		}
-		filesProcessed++
 	}
 
-	statusMessage := fmt.Sprintf("Successfully processed %d files, loaded %d chunks into document store.", filesProcessed, totalChunksLoaded)
+	statusMessage := fmt.Sprintf("Successfully processed %d files, loaded %d chunks into document store from %s.", filesProcessed, chunksLoaded, directoryPath)
 	log.Println(statusMessage)
 	return statusMessage
 }
@@ -338,127 +391,164 @@ func (a *App) sendErrorEvent(errMessage string) {
 	runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{Error: errMessage, Done: true})
 }
 
-// askOllamaChatRaw sends a request to Ollama /api/chat and handles streaming response via events.
-// This function will be called by HandleMessage for both RAG and non-RAG flows.
-func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) {
-	requestBody := OllamaChatRequest{
-		Model:    chatModelName,
+// askOllamaChatRaw sends a request to Ollama's chat API and streams the response via Wails events.
+// It should be run in a goroutine.
+func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) { // Changed parameter type to OllamaChatMessage
+	// Ensure a final "done" event is sent when this function exits, regardless of path.
+	defer func() {
+		log.Println("askOllamaChatRaw finished. Sending final 'done' event to client.")
+		runtime.EventsEmit(a.ctx, "ollamaStreamEvent", map[string]interface{}{"done": true})
+	}()
+
+	ollamaChatURL := ollamaApiUrl + "/chat" // Corrected URL construction
+	requestPayload := OllamaChatRequest{
+		Model:    chatModelName, // chatModelName is const
 		Messages: messages,
 		Stream:   true,
 	}
 
-	jsonBody, err := json.Marshal(requestBody)
+	requestBody, err := json.Marshal(requestPayload)
 	if err != nil {
-		errMsg := fmt.Sprintf("Error marshalling request body: %v", err)
+		errMsg := fmt.Sprintf("error marshalling ollama request: %v", err)
+		log.Println(errMsg)
+		a.sendErrorEvent(errMsg)
+		return // Defers will run, including the done event
+	}
+
+	log.Printf("Sending request to Ollama: %s", string(requestBody))
+
+	// Use a.ctx for the request, so it can be cancelled if the app shuts down.
+	req, err := http.NewRequestWithContext(a.ctx, "POST", ollamaChatURL, bytes.NewBuffer(requestBody))
+	if err != nil {
+		errMsg := fmt.Sprintf("error creating ollama request: %v", err)
+		log.Println(errMsg)
 		a.sendErrorEvent(errMsg)
 		return
 	}
+	req.Header.Set("Content-Type", "application/json")
 
-	log.Printf("Sending request to Ollama: %s", string(jsonBody))
-
-	resp, err := http.Post(ollamaApiUrl+"/chat", "application/json", bytes.NewBuffer(jsonBody))
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		errMsg := fmt.Sprintf("Error making POST request to Ollama: %v", err)
+		// Check for context cancellation (e.g., app closing)
+		if a.ctx.Err() != nil {
+			log.Printf("Ollama request cancelled (context error): %v", a.ctx.Err())
+			// No need to send error event if app is closing, defer will send done.
+			return
+		}
+		errMsg := fmt.Sprintf("error sending request to ollama: %v", err)
+		log.Println(errMsg)
 		a.sendErrorEvent(errMsg)
 		return
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		responseBodyBytes, _ := io.ReadAll(resp.Body)
-		defer resp.Body.Close()
-		errMsg := fmt.Sprintf("Ollama API responded with status: %s - %s", resp.Status, string(responseBodyBytes))
+		bodyBytes, _ := io.ReadAll(resp.Body) // Best effort to read body for error
+		errMsg := fmt.Sprintf("ollama API request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		log.Println(errMsg)
 		a.sendErrorEvent(errMsg)
 		return
 	}
 
-	// Process the stream in a goroutine
-	go func() {
-		defer resp.Body.Close()
-		reader := bufio.NewReader(resp.Body)
-		for {
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				if err == io.EOF {
-					log.Println("Stream finished (EOF).")
-					runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{Done: true})
-					break
-				}
-				errMsg := fmt.Sprintf("Error reading stream: %v", err)
-				a.sendErrorEvent(errMsg)
-				break
-			}
-
-			var ollamaChunk OllamaChatResponse
-			if err := json.Unmarshal(line, &ollamaChunk); err != nil {
-				log.Printf("Error unmarshalling stream chunk '%s': %v. Skipping.", string(line), err)
-				// Optionally send an error event or try to continue. For now, we log and continue.
-				// a.sendErrorEvent(fmt.Sprintf("Error parsing chunk: %v", err))
-				continue
-			}
-
-			// log.Printf("Sending chunk to frontend: '%s' (Done: %v)", ollamaChunk.Message.Content, ollamaChunk.Done)
-			runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{
-				Content: ollamaChunk.Message.Content,
-				Done:    ollamaChunk.Done,
-			})
-
-			if ollamaChunk.Done {
-				log.Println("Stream officially done according to Ollama chunk.")
-				break
-			}
+	scanner := bufio.NewScanner(resp.Body)
+	streamEndedByOllama := false // Flag to track if Ollama itself signaled completion
+	for scanner.Scan() {
+		// Check context in loop to allow for cancellation during long streams
+		if a.ctx.Err() != nil {
+			log.Printf("Stream processing cancelled (context error): %v", a.ctx.Err())
+			return // Exit, defer will send final done event
 		}
-	}()
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var ollamaResp OllamaChatResponse // Changed to use OllamaChatResponse
+		if err := json.Unmarshal(line, &ollamaResp); err != nil {
+			errMsg := fmt.Sprintf("error unmarshalling stream response: %v. Line: %s", err, string(line))
+			log.Println(errMsg)
+			a.sendErrorEvent(errMsg) // Send error for this chunk
+			continue                 // Try next line
+		}
+
+		if ollamaResp.Message.Content != "" {
+			runtime.EventsEmit(a.ctx, "ollamaStreamEvent", map[string]interface{}{
+				"content": ollamaResp.Message.Content,
+				"done":    false, // Explicitly false for content chunks
+			})
+		}
+
+		if ollamaResp.Done { // This is the Done flag from the Ollama stream chunk itself
+			log.Println("Ollama stream chunk indicates 'done'. Loop will terminate.")
+			streamEndedByOllama = true
+			break // Exit the scanner loop; the deferred function will send the final done event.
+		}
+	}
+
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		// Don't send error if context was cancelled, as that's the primary error reason.
+		if a.ctx.Err() == nil {
+			errMsg := fmt.Sprintf("error reading stream response: %v", err)
+			log.Println(errMsg)
+			a.sendErrorEvent(errMsg)
+		}
+	}
+
+	if streamEndedByOllama {
+		log.Println("Stream officially done according to Ollama chunk.")
+	} else {
+		log.Println("Stream scanner finished without explicit 'done' from Ollama chunk (e.g. EOF or error). Final 'done' event will still be sent by defer.")
+	}
+	// The deferred runtime.EventsEmit for {"done": true} will handle the final notification.
 }
 
+// HandleMessage is the main Wails-bindable method for handling user chat messages.
 func (a *App) HandleMessage(userInput string) string {
 	log.Printf("Received message from user: %s", userInput)
 
-	var messagesToOllama []OllamaChatMessage
+	var messagesToOllama []OllamaChatMessage // Changed to use OllamaChatMessage
 
-	if len(a.documentStore) == 0 {
+	a.mu.Lock()
+	isDocStoreEmpty := len(a.documentStore) == 0
+
+	if isDocStoreEmpty {
+		a.mu.Unlock()
 		log.Println("Document store is empty. Proceeding with non-RAG chat.")
-		messagesToOllama = []OllamaChatMessage{{
-			Role:    "user",
-			Content: userInput,
-		}}
+		messagesToOllama = []OllamaChatMessage{{Role: "user", Content: userInput}}
 	} else {
 		log.Println("Document store found. Proceeding with RAG chat.")
 		queryEmbedding, err := a.getOllamaEmbedding(userInput)
 		if err != nil {
-			errMsg := fmt.Sprintf("Error getting embedding for user query: %v", err)
-			a.sendErrorEvent(errMsg)
-			return "" // Return empty as per existing pattern, error sent via event
+			a.mu.Unlock()
+			go func() {
+				log.Println("HandleMessage: Error during embedding, sending done event.")
+				runtime.EventsEmit(a.ctx, "ollamaStreamEvent", map[string]interface{}{"done": true})
+			}()
+			return ""
 		}
 
-		topN := 3 // Configurable: number of relevant chunks to retrieve
-		relevantChunks := a.findRelevantChunks(queryEmbedding, topN)
+		relevantChunks := a.findRelevantChunks(queryEmbedding, 3)
+		a.mu.Unlock()
 
 		if len(relevantChunks) == 0 {
-			log.Println("No relevant chunks found for the query. Falling back to non-RAG chat.")
-			messagesToOllama = []OllamaChatMessage{{
-				Role:    "user",
-				Content: userInput,
-			}}
+			log.Println("No relevant chunks found. Proceeding with non-RAG chat.")
+			messagesToOllama = []OllamaChatMessage{{Role: "user", Content: userInput}}
 		} else {
 			log.Printf("Found %d relevant chunks for the query.", len(relevantChunks))
-			var promptBuilder strings.Builder
-			promptBuilder.WriteString("Based on the following information from your documents:\n\n")
-			for _, chunk := range relevantChunks {
-				promptBuilder.WriteString(fmt.Sprintf("--- Context from %s ---\n%s\n\n", chunk.SourceFile, chunk.Text))
+			var contextBuilder strings.Builder
+			for i, chunk := range relevantChunks {
+				// Ensure chunk.Score is being set correctly in findRelevantChunks if this log is important
+				log.Printf("Relevant chunk %d: ID %d, Source: %s, Score: %.4f", i+1, chunk.ID, chunk.SourceFile, chunk.Score)
+				fmt.Fprintf(&contextBuilder, "--- Context from %s ---\\n%s\\n\\n", chunk.SourceFile, chunk.Text)
 			}
-			promptBuilder.WriteString("--- End of Context ---\n\nPlease answer this question: " + userInput)
-			augmentedPrompt := promptBuilder.String()
-			log.Printf("Augmented prompt:\n%s", augmentedPrompt)
 
-			messagesToOllama = []OllamaChatMessage{{
-				Role:    "user",
-				Content: augmentedPrompt,
-			}}
+			augmentedPrompt := fmt.Sprintf("Based on the following information from your documents:\\n\\n%s--- End of Context ---\\n\\nPlease answer this question: %s", contextBuilder.String(), userInput)
+			log.Printf("Augmented prompt:\\n%s", augmentedPrompt)
+			messagesToOllama = []OllamaChatMessage{{Role: "user", Content: augmentedPrompt}}
 		}
 	}
 
-	// Call the refactored function to handle the Ollama call and streaming
-	a.askOllamaChatRaw(messagesToOllama)
+	go a.askOllamaChatRaw(messagesToOllama)
 
-	return "" // Indicate success, streaming handled by events/goroutine
+	return ""
 }

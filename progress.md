@@ -102,20 +102,23 @@
 
 ---
 
-## Phase 4: Frontend Integration (`App.tsx`)
+## Phase 4: Frontend Integration (`App.tsx`) & Backend Adjustments for Dialogs
 
-- [x] **Add UI for Loading Personal Data:**
-  - [x] Add a "Load Personal Data" button.
-  - [x] On button click, use `window.runtime.OpenDirectoryDialog()` to let the user select a folder.
-  - [x] If a folder is selected, call the Go `LoadPersonalData` method.
-  - [x] Display a status message in the UI (e.g., "Loading...", "X documents loaded", "Error: ...").
-- [x] **Verify Chat Interface:**
-  - [x] Ensure the chat still works as expected after the RAG backend changes.
-  - [x] Test sending messages with and without personal data loaded.
-- [ ] **(Optional) Display Context Source:**
-  - [ ] If RAG is used, consider displaying which document chunks were used as context for the AI's response.
-    - This might involve modifying the `ollamaStreamEvent` or adding a new event to pass source information.
-    - Update the UI to show this information, perhaps subtly or on hover/click.
+- [ ] **Add UI for Loading Personal Data:**
+  - [x] **`frontend/src/App.tsx`:**
+    - [x] Add a "Load PersonalData" button.
+    - [x] Call the Go `LoadPersonalData` function when clicked.
+    - [x] Display status messages from `LoadPersonalData` (e.g., "Processing...", "X files loaded", error messages).
+  - [x] **`app.go`:**
+    - [x] Modify `LoadPersonalData()` to take no arguments and use `runtime.OpenDirectoryDialog` internally.
+    - [x] Fix `shellItem is nil` error on Windows when opening directory dialog for `LoadPersonalData` by:
+      - [x] Initializing COM in `startup()` and uninitializing in `shutdown()`.
+      - [x] Setting a `DefaultDirectory` in `runtime.OpenDialogOptions`.
+      - [x] Treating the `shellItem is nil` error specifically as a user cancellation and returning an appropriate status message.
+- [ ] **Verify Chat Interface:**
+  - [ ] Ensure the chat still works as expected after RAG backend changes and dialog implementation.
+- **(Optional) Display Context Source**
+  - [ ] Display which document chunks were used for RAG context (if any).
 
 ---
 

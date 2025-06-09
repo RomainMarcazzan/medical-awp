@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
-import { HandleMessage, LoadPersonalData } from "../wailsjs/go/main/App"; // Import LoadPersonalData
-import { EventsOn, OpenDirectoryDialog } from "../wailsjs/runtime"; // Import EventsOn and OpenDirectoryDialog
+import { HandleMessage, LoadPersonalData } from "../wailsjs/go/main/App";
+import { EventsOn } from "../wailsjs/runtime"; // Corrected import path for EventsOn
 
 interface Message {
   id: number;
@@ -17,8 +17,9 @@ interface OllamaStreamEventPayload {
 }
 
 function App() {
+  const [input, setInput] = useState<string>("");
   const [messages, setMessages] = useState<Message[]>([]);
-  const [inputText, setInputText] = useState("");
+  const [dataLoadStatus, setDataLoadStatus] = useState<string>("");
   const [isLoading, setIsLoading] = useState(false); // Loading state for chat messages
   const [isDataLoading, setIsDataLoading] = useState(false); // Loading state for personal data
   const [dataLoadingStatus, setDataLoadingStatus] = useState<string>(""); // Status message for data loading
@@ -33,66 +34,96 @@ function App() {
 
   // Listen for streaming events from Go
   useEffect(() => {
-    const unsubscribe = EventsOn("ollamaStreamEvent", (data: OllamaStreamEventPayload) => {
-      // Ensure data is not undefined and has the expected structure
-      if (typeof data !== "object" || data === null) {
-        console.error("Received malformed stream event data:", data);
-        if (currentAiMessageIdRef.current !== null) {
-          setMessages((prevMessages) =>
-            prevMessages.map((msg) =>
-              msg.id === currentAiMessageIdRef.current
-                ? { ...msg, text: (msg.text || "") + "\\\\n[Error: Malformed stream event]" } // Ensure msg.text is not null
-                : msg
-            )
-          );
+    console.log("JS: App component mounted. Attempting to register ollamaStreamEvent listener.");
+
+    // Updated interface to match observed event data
+    interface OllamaStreamEventData {
+      content?: string; // Content is present for chunks
+      done: boolean; // True when the stream is complete
+    }
+
+    const unlisten = EventsOn("ollamaStreamEvent", (eventData: OllamaStreamEventPayload) => {
+      // Changed to use OllamaStreamEventPayload
+      console.log("JS: ollamaStreamEvent received:", eventData);
+
+      if (eventData.error) {
+        console.error("JS: Ollama stream error:", eventData.error);
+        setMessages((prevMessages) => {
+          const newMessages = [...prevMessages];
+          const aiMessageIndex = newMessages.findIndex((msg) => msg.id === currentAiMessageIdRef.current);
+          if (aiMessageIndex !== -1) {
+            newMessages[aiMessageIndex] = {
+              ...newMessages[aiMessageIndex],
+              text:
+                newMessages[aiMessageIndex].text.length > 0
+                  ? `\${newMessages[aiMessageIndex].text}\n[Error: \${eventData.error}]`
+                  : `[Error: \${eventData.error}]`,
+            };
+          } else {
+            // If no placeholder, add a new error message
+            newMessages.push({ id: Date.now(), text: `[Error: \${eventData.error}]`, sender: "ai" });
+          }
+          return newMessages;
+        });
+        setIsLoading(false); // Stop loading on error
+        currentAiMessageIdRef.current = null; // Reset ref on error
+        return; // Stop further processing for this event
+      }
+
+      setMessages((prevMessages) => {
+        const newMessages = [...prevMessages];
+        const aiMessageIndex = newMessages.findIndex((msg) => msg.id === currentAiMessageIdRef.current);
+
+        if (eventData.done) {
+          console.log("JS: Ollama stream processing marked as done.");
+          setIsLoading(false); // Stop loading when stream is done
+          currentAiMessageIdRef.current = null; // Reset ref when stream is done
+          // No text update needed here, just finalize loading state
+          return newMessages;
         }
-        setIsLoading(false);
-        currentAiMessageIdRef.current = null;
-        return;
-      }
 
-      if (data.error) {
-        console.error("Streaming Error from Go:", data.error);
-        if (currentAiMessageIdRef.current !== null) {
-          setMessages((prevMessages) =>
-            prevMessages.map((msg) =>
-              msg.id === currentAiMessageIdRef.current
-                ? { ...msg, text: (msg.text || "") + `\\\\n[Error: ${data.error}]` } // Ensure msg.text is not null
-                : msg
-            )
-          );
+        if (typeof eventData.content === "string") {
+          if (aiMessageIndex !== -1) {
+            newMessages[aiMessageIndex] = {
+              ...newMessages[aiMessageIndex],
+              text: newMessages[aiMessageIndex].text + eventData.content,
+            };
+          } else {
+            // This case should ideally not be hit if placeholder is always added
+            console.warn(
+              "JS: Received stream content, but AI message placeholder not found by ID. Appending to last AI message or creating new."
+            );
+            const lastMessage = newMessages[newMessages.length - 1];
+            if (lastMessage && lastMessage.sender === "ai") {
+              lastMessage.text += eventData.content;
+            } else {
+              newMessages.push({ id: Date.now(), text: eventData.content, sender: "ai" });
+            }
+          }
         }
-        setIsLoading(false);
-        currentAiMessageIdRef.current = null;
-        return;
-      }
-
-      if (currentAiMessageIdRef.current !== null && typeof data.content === "string") {
-        setMessages((prevMessages) =>
-          prevMessages.map((msg) =>
-            msg.id === currentAiMessageIdRef.current
-              ? { ...msg, text: (msg.text || "") + data.content } // Append content
-              : msg
-          )
-        );
-      }
-
-      if (data.done) {
-        setIsLoading(false);
-        currentAiMessageIdRef.current = null;
-        console.log("Streaming finished.");
-      }
+        return newMessages;
+      });
     });
 
-    // Cleanup listener on component unmount
+    if (typeof unlisten === "function") {
+      console.log("JS: ollamaStreamEvent listener registered successfully.");
+    } else {
+      console.error("JS: Failed to register ollamaStreamEvent listener. 'unlisten' is not a function:", unlisten);
+    }
+
     return () => {
-      // Wails V2 EventsOn returns a function to unsubscribe
-      unsubscribe();
+      console.log("JS: App component unmounting. Cleaning up ollamaStreamEvent listener.");
+      if (typeof unlisten === "function") {
+        unlisten();
+        console.log("JS: ollamaStreamEvent listener cleaned up.");
+      } else {
+        console.warn("JS: Cleanup - 'unlisten' was not a function during unmount.");
+      }
     };
-  }, []); // Empty dependency array means this runs once on mount and cleans up on unmount
+  }, []); // Empty dependency array ensures this runs once on mount and cleans up on unmount
 
   const handleSendMessage = async () => {
-    if (inputText.trim() === "" || isLoading) {
+    if (input.trim() === "" || isLoading) {
       // Prevent sending if already loading
       return;
     }
@@ -100,7 +131,7 @@ function App() {
 
     const newUserMessage: Message = {
       id: Date.now(),
-      text: inputText,
+      text: input,
       sender: "user",
     };
 
@@ -116,8 +147,8 @@ function App() {
     // Use a functional update to ensure we're working with the latest state
     setMessages((prevMessages) => [...prevMessages, newUserMessage, newAiMessagePlaceholder]);
 
-    const currentInput = inputText;
-    setInputText("");
+    const currentInput = input;
+    setInput("");
 
     try {
       const initialResponse = await HandleMessage(currentInput);
@@ -146,19 +177,11 @@ function App() {
 
   const handleLoadData = async () => {
     setIsDataLoading(true);
-    setDataLoadingStatus("Opening directory selection dialog...");
+    setDataLoadingStatus("Requesting directory selection from user..."); // Updated status
     try {
-      const directoryPath = await OpenDirectoryDialog({
-        title: "Select Folder Containing Your Documents",
-      });
-
-      if (directoryPath) {
-        setDataLoadingStatus(`Loading documents from: ${directoryPath}...`);
-        const result = await LoadPersonalData(directoryPath);
-        setDataLoadingStatus(result); // Display result from Go (e.g., "Successfully loaded X chunks.")
-      } else {
-        setDataLoadingStatus("Document loading cancelled by user.");
-      }
+      // Call LoadPersonalData without arguments, as it now handles the dialog internally
+      const result = await LoadPersonalData();
+      setDataLoadingStatus(result); // Display result from Go
     } catch (error: any) {
       console.error("Error loading personal data:", error);
       setDataLoadingStatus(`Error loading documents: ${error.message || String(error)}`);
@@ -197,8 +220,8 @@ function App() {
           <input
             type="text"
             className="chat-input"
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !isLoading && handleSendMessage()}
             placeholder="Type your message..."
             disabled={isLoading || isDataLoading}

@@ -10,6 +10,6 @@ export function HandleMessage(arg1) {
   return window['go']['main']['App']['HandleMessage'](arg1);
 }
 
-export function LoadPersonalData(arg1) {
-  return window['go']['main']['App']['LoadPersonalData'](arg1);
+export function LoadPersonalData() {
+  return window['go']['main']['App']['LoadPersonalData']();
 }
