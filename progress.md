@@ -169,7 +169,7 @@
   - [ ] Test with various `.txt` files (empty, large, different encodings if applicable).
     - [x] Empty files
     - [x] Large files
-  - [ ] Test with different folder structures.
+  - [ ] Test with different folder structures (Note: subfolder loading not currently implemented, skipped as per user preference).
   - [ ] Test edge cases for chunking and embedding.
   - [ ] Test error handling for Ollama API calls (e.g., Ollama service down, model not available).
   - [ ] Test UI responsiveness and error display.
