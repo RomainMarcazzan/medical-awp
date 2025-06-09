@@ -35,6 +35,13 @@ type DocumentChunk struct {
 	Score      float64   // Added Score field for ranking
 }
 
+// SourceInfo defines the structure for information about a retrieved document chunk.
+type SourceInfo struct {
+	FileName string  `json:"fileName"`
+	ChunkID  int     `json:"chunkId"`
+	Score    float64 `json:"score"`
+}
+
 // App struct
 type App struct {
 	ctx            context.Context
@@ -378,8 +385,11 @@ func (a *App) findRelevantChunks(queryEmbedding []float64, topN int) []DocumentC
 	numToReturn := min(topN, len(rankedChunks))
 	resultChunks := make([]DocumentChunk, numToReturn)
 	for i := 0; i < numToReturn; i++ {
-		resultChunks[i] = rankedChunks[i].chunk
-		log.Printf("Relevant chunk %d: ID %d, Source: %s, Score: %.4f", i+1, rankedChunks[i].chunk.ID, rankedChunks[i].chunk.SourceFile, rankedChunks[i].score)
+		// Assign the chunk and its calculated score to the result
+		chunkWithScore := rankedChunks[i].chunk
+		chunkWithScore.Score = rankedChunks[i].score // Explicitly set the score
+		resultChunks[i] = chunkWithScore
+		log.Printf("Selected relevant chunk %d: ID %d, Source: %s, Score: %.4f", i+1, resultChunks[i].ID, resultChunks[i].SourceFile, resultChunks[i].Score)
 	}
 
 	return resultChunks
@@ -397,7 +407,7 @@ func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) { // Changed parame
 	// Ensure a final "done" event is sent when this function exits, regardless of path.
 	defer func() {
 		log.Println("askOllamaChatRaw finished. Sending final 'done' event to client.")
-		runtime.EventsEmit(a.ctx, "ollamaStreamEvent", map[string]interface{}{"done": true})
+		runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{Done: true}) // Use struct
 	}()
 
 	ollamaChatURL := ollamaApiUrl + "/chat" // Corrected URL construction
@@ -472,9 +482,9 @@ func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) { // Changed parame
 		}
 
 		if ollamaResp.Message.Content != "" {
-			runtime.EventsEmit(a.ctx, "ollamaStreamEvent", map[string]interface{}{
-				"content": ollamaResp.Message.Content,
-				"done":    false, // Explicitly false for content chunks
+			runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{ // Use struct
+				Content: ollamaResp.Message.Content,
+				Done:    false,
 			})
 		}
 
@@ -520,32 +530,44 @@ func (a *App) HandleMessage(userInput string) string {
 		queryEmbedding, err := a.getOllamaEmbedding(userInput)
 		if err != nil {
 			a.mu.Unlock()
-			go func() {
-				log.Println("HandleMessage: Error during embedding, sending done event.")
-				runtime.EventsEmit(a.ctx, "ollamaStreamEvent", map[string]interface{}{"done": true})
-			}()
-			return ""
+			// Send an error event AND a done event to ensure frontend stops loading
+			// It's important that sendErrorEvent itself sends Done:true
+			// If getOllamaEmbedding fails, we need to signal the frontend that the operation is over.
+			errMsg := fmt.Sprintf("Failed to get embedding for RAG query: %v", err)
+			a.sendErrorEvent(errMsg) // This already sends {Error: errMsg, Done: true}
+			// The defer in askOllamaChatRaw won't run if we don't call it.
+			// So, if we error out here, we must ensure the UI knows the stream is "done".
+			// sendErrorEvent handles this.
+			// Also emit an empty context event to clear any previous context on the frontend
+			runtime.EventsEmit(a.ctx, "ragContextSources", []SourceInfo{})
+			return "" // Return immediately, error and done signal sent.
 		}
 
 		relevantChunks := a.findRelevantChunks(queryEmbedding, 3)
-		a.mu.Unlock()
+		a.mu.Unlock() // Unlock after document store access is complete
 
+		var sourcesForFrontend []SourceInfo
 		if len(relevantChunks) == 0 {
 			log.Println("No relevant chunks found. Proceeding with non-RAG chat.")
 			messagesToOllama = []OllamaChatMessage{{Role: "user", Content: userInput}}
+			// Emit empty sources if no relevant chunks found for RAG
+			sourcesForFrontend = []SourceInfo{}
 		} else {
 			log.Printf("Found %d relevant chunks for the query.", len(relevantChunks))
 			var contextBuilder strings.Builder
+			sourcesForFrontend = make([]SourceInfo, len(relevantChunks))
 			for i, chunk := range relevantChunks {
-				// Ensure chunk.Score is being set correctly in findRelevantChunks if this log is important
 				log.Printf("Relevant chunk %d: ID %d, Source: %s, Score: %.4f", i+1, chunk.ID, chunk.SourceFile, chunk.Score)
-				fmt.Fprintf(&contextBuilder, "--- Context from %s ---\\n%s\\n\\n", chunk.SourceFile, chunk.Text)
+				fmt.Fprintf(&contextBuilder, "--- Context from %s (ID: %d, Score: %.2f) ---\\n%s\\n\\n", chunk.SourceFile, chunk.ID, chunk.Score, chunk.Text)
+				sourcesForFrontend[i] = SourceInfo{FileName: chunk.SourceFile, ChunkID: chunk.ID, Score: chunk.Score}
 			}
 
 			augmentedPrompt := fmt.Sprintf("Based on the following information from your documents:\\n\\n%s--- End of Context ---\\n\\nPlease answer this question: %s", contextBuilder.String(), userInput)
 			log.Printf("Augmented prompt:\\n%s", augmentedPrompt)
 			messagesToOllama = []OllamaChatMessage{{Role: "user", Content: augmentedPrompt}}
 		}
+		// Emit the source info for the frontend before starting the AI response stream
+		runtime.EventsEmit(a.ctx, "ragContextSources", sourcesForFrontend)
 	}
 
 	go a.askOllamaChatRaw(messagesToOllama)

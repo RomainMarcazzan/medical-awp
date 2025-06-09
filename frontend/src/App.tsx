@@ -16,6 +16,13 @@ interface OllamaStreamEventPayload {
   error?: string;
 }
 
+// Define the SourceInfo interface to match the Go struct
+interface SourceInfo {
+  fileName: string;
+  chunkId: number;
+  score: number;
+}
+
 function App() {
   const [input, setInput] = useState<string>("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -23,6 +30,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false); // Loading state for chat messages
   const [isDataLoading, setIsDataLoading] = useState(false); // Loading state for personal data
   const [dataLoadingStatus, setDataLoadingStatus] = useState<string>(""); // Status message for data loading
+  const [ragSources, setRagSources] = useState<SourceInfo[]>([]); // State for RAG sources
   const currentAiMessageIdRef = useRef<number | null>(null); // To track the ID of the AI message being streamed
   const messageEndRef = useRef<null | HTMLDivElement>(null);
 
@@ -42,7 +50,7 @@ function App() {
       done: boolean; // True when the stream is complete
     }
 
-    const unlisten = EventsOn("ollamaStreamEvent", (eventData: OllamaStreamEventPayload) => {
+    const unlistenOllama = EventsOn("ollamaStreamEvent", (eventData: OllamaStreamEventPayload) => {
       // Changed to use OllamaStreamEventPayload
       console.log("JS: ollamaStreamEvent received:", eventData);
 
@@ -94,9 +102,11 @@ function App() {
               "JS: Received stream content, but AI message placeholder not found by ID. Appending to last AI message or creating new."
             );
             const lastMessage = newMessages[newMessages.length - 1];
-            if (lastMessage && lastMessage.sender === "ai") {
+            if (lastMessage && lastMessage.sender === "ai" && !currentAiMessageIdRef.current) {
+              // Append if no active stream ID
               lastMessage.text += eventData.content;
-            } else {
+            } else if (!currentAiMessageIdRef.current) {
+              // Create new if no active stream ID and last wasn't AI
               newMessages.push({ id: Date.now(), text: eventData.content, sender: "ai" });
             }
           }
@@ -105,29 +115,46 @@ function App() {
       });
     });
 
-    if (typeof unlisten === "function") {
+    // Listener for RAG context sources
+    const unlistenContext = EventsOn("ragContextSources", (sources: SourceInfo[]) => {
+      console.log("JS: ragContextSources received:", sources);
+      setRagSources(sources);
+    });
+
+    if (typeof unlistenOllama === "function") {
       console.log("JS: ollamaStreamEvent listener registered successfully.");
     } else {
-      console.error("JS: Failed to register ollamaStreamEvent listener. 'unlisten' is not a function:", unlisten);
+      console.error("JS: Failed to register ollamaStreamEvent listener. 'unlisten' is not a function:", unlistenOllama);
     }
 
     return () => {
       console.log("JS: App component unmounting. Cleaning up ollamaStreamEvent listener.");
-      if (typeof unlisten === "function") {
-        unlisten();
-        console.log("JS: ollamaStreamEvent listener cleaned up.");
-      } else {
-        console.warn("JS: Cleanup - 'unlisten' was not a function during unmount.");
+      // Ensure unlisten functions are called if they exist
+      if (unlistenOllama) {
+        try {
+          unlistenOllama();
+          console.log("JS: ollamaStreamEvent listener cleaned up.");
+        } catch (e) {
+          console.warn("Error unsubscribing ollamaStreamEvent:", e);
+        }
+      }
+      if (unlistenContext) {
+        try {
+          unlistenContext();
+        } catch (e) {
+          console.warn("Error unsubscribing ragContextSources:", e);
+        }
       }
     };
   }, []); // Empty dependency array ensures this runs once on mount and cleans up on unmount
 
   const handleSendMessage = async () => {
-    if (input.trim() === "" || isLoading) {
-      // Prevent sending if already loading
+    if (input.trim() === "" || isLoading || isDataLoading) {
+      // Also disable send if data is loading
       return;
     }
     setIsLoading(true);
+    setRagSources([]); // Clear previous RAG sources
 
     const newUserMessage: Message = {
       id: Date.now(),
@@ -139,7 +166,7 @@ function App() {
     currentAiMessageIdRef.current = newAiMessageId;
     const newAiMessagePlaceholder: Message = {
       id: newAiMessageId,
-      text: "", // Initially empty, will be filled by stream
+      text: "", // Initially empty, will be filled by stream. Loader will be shown here.
       sender: "ai",
     };
 
@@ -178,10 +205,12 @@ function App() {
   const handleLoadData = async () => {
     setIsDataLoading(true);
     setDataLoadingStatus("Requesting directory selection from user..."); // Updated status
+    setRagSources([]); // Clear RAG sources when loading new data
     try {
       // Call LoadPersonalData without arguments, as it now handles the dialog internally
       const result = await LoadPersonalData();
       setDataLoadingStatus(result); // Display result from Go
+      console.log("JS: LoadPersonalData result:", result);
     } catch (error: any) {
       console.error("Error loading personal data:", error);
       setDataLoadingStatus(`Error loading documents: ${error.message || String(error)}`);
@@ -196,23 +225,48 @@ function App() {
         <div className="message-list">
           {messages.map((msg) => (
             <div key={msg.id} className={`message ${msg.sender}`}>
-              {/* Render text with preserved newlines */}
-              <p style={{ whiteSpace: "pre-wrap" }}>{msg.text}</p>
+              {msg.sender === "ai" && isLoading && msg.text === "" && currentAiMessageIdRef.current === msg.id ? (
+                <div style={{ display: "flex", alignItems: "center" }}>
+                  <div className="loader"></div>
+                  <span>Thinking...</span>
+                </div>
+              ) : (
+                <p style={{ whiteSpace: "pre-wrap" }}>{msg.text}</p>
+              )}
             </div>
           ))}
-          {isLoading &&
-            currentAiMessageIdRef.current === null && ( // Show general loader if AI message isn't created yet
-              <div className="message ai">
-                <p>
-                  <i>Preparing response...</i>
-                </p>
-              </div>
-            )}
           <div ref={messageEndRef} />
         </div>
+
+        {/* Display RAG Sources */}
+        {ragSources && ragSources.length > 0 && (
+          <div className="rag-sources-container">
+            <p className="rag-sources-title">Retrieved Context:</p>
+            <ul className="rag-sources-list">
+              {ragSources.map((source, index) => (
+                <li
+                  key={index}
+                  className="rag-source-item"
+                  title={`File: \${source.fileName}\\nChunk ID: \${source.chunkId}\\nScore: \${source.score.toFixed(4)}`}
+                >
+                  {source.fileName.length > 25 ? `...\${source.fileName.slice(-22)}` : source.fileName} (Score:{" "}
+                  {source.score.toFixed(2)})
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         <div className="data-loading-section">
-          <button className="load-data-button" onClick={handleLoadData} disabled={isDataLoading}>
-            {isDataLoading ? "Loading Data..." : "Load Personal Data"}
+          <button className="load-data-button" onClick={handleLoadData} disabled={isDataLoading || isLoading}>
+            {isDataLoading ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <div className="loader"></div>
+                <span style={{ marginLeft: "8px" }}>Loading Data...</span>
+              </div>
+            ) : (
+              "Load Personal Data"
+            )}
           </button>
           {dataLoadingStatus && <p className="data-loading-status">{dataLoadingStatus}</p>}
         </div>
@@ -222,12 +276,21 @@ function App() {
             className="chat-input"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !isLoading && handleSendMessage()}
-            placeholder="Type your message..."
+            onKeyDown={(e) => e.key === "Enter" && !isLoading && !isDataLoading && handleSendMessage()} // Also check isDataLoading
+            placeholder={
+              isLoading ? "AI is thinking..." : isDataLoading ? "Loading documents..." : "Type your message..."
+            }
             disabled={isLoading || isDataLoading}
           />
           <button className="send-button" onClick={handleSendMessage} disabled={isLoading || isDataLoading}>
-            Send
+            {isLoading ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <div className="loader"></div>
+                <span style={{ marginLeft: "8px" }}>Sending...</span>
+              </div>
+            ) : (
+              "Send"
+            )}
           </button>
         </div>
       </div>

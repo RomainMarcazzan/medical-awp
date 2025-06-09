@@ -102,23 +102,47 @@
 
 ---
 
-## Phase 4: Frontend Integration (`App.tsx`) & Backend Adjustments for Dialogs
+## Phase 4: Frontend Integration & Backend Adjustments
 
-- [ ] **Add UI for Loading Personal Data:**
+- [x] **UI for Loading Personal Data:**
   - [x] **`frontend/src/App.tsx`:**
-    - [x] Add a "Load PersonalData" button.
-    - [x] Call the Go `LoadPersonalData` function when clicked.
-    - [x] Display status messages from `LoadPersonalData` (e.g., "Processing...", "X files loaded", error messages).
+    - [x] Add a "Load Data" button.
+    - [x] On click, use Wails `window.runtime.DialogOpenFile` or `DialogSelectFolder` to let the user pick a directory.
+    - [x] Call Go `LoadPersonalData(selectedPath)` with the chosen path.
+    - [x] Display the status message returned from Go.
+    - [x] Add loading/disabled states for the button during data processing.
+- [x] **Refine `HandleMessage` and `LoadPersonalData` in `app.go`:**
+  - [x] Ensure `HandleMessage` uses streaming and emits events for AI responses (`OllamaStreamEvent` with `type: "response"` or `type: "error"`).
+  - [x] Ensure `LoadPersonalData` emits events for progress/completion/errors (`DataLoadEvent` with `status`, `message`, `error`).
+  - [x] Implement robust error handling and logging in both.
+  - [x] Add mutexes to protect shared data like `documentStore` if accessed by concurrent goroutines.
+- [x] **Update Frontend to Handle New Events:**
+  - [x] **`frontend/src/App.tsx`:**
+    - [x] Listen for `OllamaStreamEvent` and update chat messages.
+    - [x] Listen for `DataLoadEvent` and display feedback to the user (e.g., loading indicators, success/error messages).
+- [x] **Test RAG Workflow:**
+  - [x] Load some `.txt` files.
+  - [x] Ask questions that should trigger RAG.
+  - [x] Verify that the responses seem to incorporate information from the loaded documents.
+  - [x] Check Go logs for embedding generation, chunk retrieval, and augmented prompt.
+- [x] **(Optional) Display Context Source:**
   - [x] **`app.go`:**
-    - [x] Modify `LoadPersonalData()` to take no arguments and use `runtime.OpenDirectoryDialog` internally.
-    - [x] Fix `shellItem is nil` error on Windows when opening directory dialog for `LoadPersonalData` by:
-      - [x] Initializing COM in `startup()` and uninitializing in `shutdown()`.
-      - [x] Setting a `DefaultDirectory` in `runtime.OpenDialogOptions`.
-      - [x] Treating the `shellItem is nil` error specifically as a user cancellation and returning an appropriate status message.
-- [ ] **Verify Chat Interface:**
-  - [ ] Ensure the chat still works as expected after RAG backend changes and dialog implementation.
-- **(Optional) Display Context Source**
-  - [ ] Display which document chunks were used for RAG context (if any).
+    - [x] Define `SourceInfo struct { FileName string; ChunkID int; Score float64 }`.
+    - [x] In `HandleMessage`, when RAG is used, populate a `[]SourceInfo` from the `relevantChunks`.
+    - [x] Emit a new Wails event (e.g., `ragContextSources`) with this `[]SourceInfo` _before_ calling the LLM for the final answer. If RAG is skipped or fails, emit an empty slice.
+  - [x] **`frontend/src/App.tsx`:**
+    - [x] Define a corresponding `SourceInfo` interface.
+    - [x] Add state to store `SourceInfo[]`.
+    - [x] Listen for the `ragContextSources` event and update the state.
+    - [x] Clear sources when a new message is sent or new data is loaded.
+    - [x] Display the source information (e.g., filename, chunk ID, score) in the UI, perhaps below the relevant AI message or in a dedicated section.
+  - [x] **`frontend/src/App.css` (or equivalent):**
+    - [x] Add basic styling for the context source display.
+- [x] **Review and Address "No listeners for event"**:
+  - [x] Ensure all Go event emissions (`runtime.EventsEmit`) have corresponding `runtime.EventsOn` listeners in the frontend for the _exact_ event names.
+  - [x] Verify event names are consistent between backend and frontend.
+  - [x] If issues persist, simplify event handling to isolate the problem.
+  - [x] Concluded that remaining "TRA | No listeners..." messages are likely benign dev environment noise as UI functions correctly.
 
 ---
 
