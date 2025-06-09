@@ -16,13 +16,13 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  width: 100%;
-  max-width: 800px; /* Or your preferred max width */
+  width: 100%; /* Ensure it takes full width */
+  /* max-width: 800px; */ /* Removed max-width */
   margin: 0 auto;
   background-color: #2f2f2f; /* Darker background for chat area */
-  border-radius: 8px;
+  border-radius: 0; /* Remove border-radius if it's truly edge-to-edge */
   overflow: hidden;
-  box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+  /* box-shadow: 0 0 10px rgba(0, 0, 0, 0.5); */ /* Optional: remove shadow if full width */
 }
 
 .message-list {
@@ -53,6 +53,20 @@
   color: white;
   align-self: flex-start;
   border-bottom-left-radius: 5px;
+}
+
+/* Styles for full-width AI responses */
+.message.ai.full-width-markdown {
+  align-self: stretch; /* Make the AI message take full width */
+  max-width: none; /* Override max-width for full width */
+  background-color: #3c3c3c; /* Slightly different background for full-width AI messages */
+  border-radius: 4px; /* Optional: more squared corners for full-width */
+  text-align: left; /* Ensure text within is left-aligned */
+}
+
+.message.ai.full-width-markdown pre,
+.message.ai.full-width-markdown code {
+  text-align: left; /* Ensure code blocks and inline code are left-aligned */
 }
 
 .message p {
@@ -169,3 +183,33 @@
     transform: rotate(360deg);
   }
 }
+
+/* Styles for Markdown code blocks */
+.message.ai pre {
+  background-color: #1e1e1e; /* Dark background for code blocks */
+  color: #d4d4d4; /* Light text color for code */
+  padding: 10px;
+  border-radius: 4px;
+  overflow-x: auto; /* Allow horizontal scrolling for long lines */
+  font-family: "Courier New", Courier, monospace; /* Monospaced font */
+  font-size: 0.9em;
+}
+
+.message.ai code {
+  font-family: "Courier New", Courier, monospace; /* Ensure inline code also uses monospaced font */
+  background-color: #1e1e1e; /* Consistent background */
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+/* If you want to style inline code differently from code blocks, you can do: */
+/*
+.message.ai p > code, .message.ai li > code {
+  background-color: #333;
+  color: #eee;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+*/

@@ -148,6 +148,10 @@
 
 ## Phase 5: Testing & Refinement
 
+- [x] **Render AI responses as Markdown:**
+  - [x] Install `react-markdown` and `remark-gfm` in the frontend.
+  - [x] Update `App.tsx` to use `ReactMarkdown` component for AI messages.
+  - [x] Configure Vite to handle `react-markdown` dependencies if necessary (e.g., `external` in `vite.config.ts`).
 - [ ] **Comprehensive Testing:**
   - [ ] Test with various `.txt` files (empty, large, different encodings if applicable).
   - [ ] Test with different folder structures.

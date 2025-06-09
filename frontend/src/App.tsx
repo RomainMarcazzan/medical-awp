@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import "./App.css";
 import { HandleMessage, LoadPersonalData } from "../wailsjs/go/main/App";
 import { EventsOn } from "../wailsjs/runtime"; // Corrected import path for EventsOn
@@ -224,12 +226,20 @@ function App() {
       <div className="chat-container">
         <div className="message-list">
           {messages.map((msg) => (
-            <div key={msg.id} className={`message ${msg.sender}`}>
+            // Message bubble
+            <div
+              key={msg.id}
+              className={`message ${msg.sender === "user" ? "user" : "ai"}${
+                msg.sender === "ai" ? " full-width-markdown" : ""
+              }`}
+            >
               {msg.sender === "ai" && isLoading && msg.text === "" && currentAiMessageIdRef.current === msg.id ? (
                 <div style={{ display: "flex", alignItems: "center" }}>
                   <div className="loader"></div>
                   <span>Thinking...</span>
                 </div>
+              ) : msg.sender === "ai" ? (
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
               ) : (
                 <p style={{ whiteSpace: "pre-wrap" }}>{msg.text}</p>
               )}
