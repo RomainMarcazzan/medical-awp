@@ -181,6 +181,15 @@
     - [x] Implemented `fixedLengthChunker`, `doRecursiveSplit`, and `chunkTextRecursive` functions in `app.go`.
     - [x] Updated `LoadPersonalData` to use `chunkTextRecursive`.
     - [x] Added `defaultRecursiveSeparators` list.
+- [ ] **Implement Persistent Vector Store (SQLite with sqlite-vss):**
+  - [ ] Add SQLite driver (`github.com/mattn/go-sqlite3`) and `sqlite-vss` dependencies to `go.mod`.
+  - [ ] Modify `App` struct in `app.go` to include SQLite database connection management.
+  - [ ] Implement database initialization logic in `startup` or `NewApp` to create tables (for documents, chunks, embeddings) if they don't exist, and load the `sqlite-vss` extension.
+  - [ ] Update `LoadPersonalData` in `app.go`:
+    - [ ] Instead of storing in `documentStore`, insert document chunks, embeddings, and source file information into the SQLite database.
+  - [ ] Update `findRelevantChunks` in `app.go`:
+    - [ ] Query the SQLite database using `sqlite-vss` functions to find chunks with embeddings similar to the query embedding.
+  - [ ] Remove in-memory `documentStore` and `nextDocumentID` from `app.go`.
 - [ ] **Refine Prompt Engineering:**
   - [ ] Optimize the augmented prompt structure for clarity and effectiveness.
 - [ ] **Improve Error Handling and User Feedback:**
@@ -209,7 +218,6 @@
 ## Future Enhancements (Post-MVP)
 
 - [ ] Support for more document types (e.g., `.pdf`, `.docx`) using Go libraries.
-- [ ] Persistent document store (e.g., using SQLite or a simple file-based database) instead of in-memory.
 - [ ] UI for managing loaded documents (e.g., view list, remove documents).
 - [ ] Option to select different Ollama models from the UI.
 - [ ] More sophisticated RAG techniques (e.g., re-ranking, query transformations).
