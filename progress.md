@@ -6,15 +6,15 @@
 
 ## Phase 1: Environment Setup (Windows)
 
-- [ ] **Install Ollama for Windows:**
+- [x] **Install Ollama for Windows:**
   - Download from [ollama.com](https://ollama.com/).
   - Follow installation instructions.
-- [ ] **Verify Ollama Installation:**
+- [x] **Verify Ollama Installation:**
   - Run `ollama --version` in terminal.
-- [ ] **Pull Necessary Ollama Models:**
-  - [ ] Chat model: `ollama pull llama3` (or your preferred chat model).
-  - [ ] Embedding model: `ollama pull nomic-embed-text`.
-- [ ] **Confirm Ollama Service and Models:**
+- [x] **Pull Necessary Ollama Models:**
+  - [x] Chat model: `ollama pull llama3` (or your preferred chat model).
+  - [x] Embedding model: `ollama pull nomic-embed-text`.
+- [x] **Confirm Ollama Service and Models:**
   - Ensure Ollama service is running (usually starts automatically).
   - List available models: `ollama list`.
 
@@ -22,27 +22,27 @@
 
 ## Phase 2: Project Initialization & Basic Chat
 
-- [ ] **Create or Clone Wails Project:**
-  - If new: `wails init -n medical-awp-rag -t react-ts` (replace `react-ts` with your preferred template if different).
+- [x] **Create or Clone Wails Project:**
+  - If new: `wails init -n medical-awp -t react-ts` (replace `react-ts` with your preferred template if different).
   - If cloning an existing Wails project structure: `git clone <your-repository-url>`.
-  - Navigate into the project directory: `cd medical-awp-rag`.
-- [ ] **Implement Basic Ollama Chat Functionality (Non-RAG):**
+  - Navigate into the project directory: `cd medical-awp`.
+- [x] **Implement Basic Ollama Chat Functionality (Non-RAG):**
   - **`app.go`:**
-    - [ ] Create an `App` struct.
-    - [ ] Implement `NewApp()` and `Startup()` methods.
-    - [ ] Implement a `HandleMessage(userInput string) string` method that:
+    - [x] Create an `App` struct.
+    - [x] Implement `NewApp()` and `Startup()` methods.
+    - [x] Implement a `HandleMessage(userInput string) string` method that:
       - Takes user input.
       - Constructs a request for Ollama's `/api/chat` endpoint (using the chat model, e.g., `llama3`, and `stream: false`).
       - Makes an HTTP POST request to `http://localhost:11434/api/chat`.
       - Parses the response and returns the AI's message content.
       - Includes basic error handling and logging.
   - **`frontend/src/App.tsx` (or equivalent):**
-    - [ ] Create state for input text and messages array.
-    - [ ] Create an input field for the user to type messages.
-    - [ ] Create a "Send" button.
-    - [ ] On send, call the Go `HandleMessage` function via `window.go.main.App.HandleMessage(inputText)`.
-    - [ ] Add the user's message and the AI's response to the messages array.
-    - [ ] Render the messages array in a chat-like interface.
+    - [x] Create state for input text and messages array.
+    - [x] Create an input field for the user to type messages.
+    - [x] Create a "Send" button.
+    - [x] On send, call the Go `HandleMessage` function via `window.go.main.App.HandleMessage(inputText)`.
+    - [x] Add the user's message and the AI's response to the messages array.
+    - [x] Render the messages array in a chat-like interface.
 - [ ] **Test Basic Chat:**
   - Run `wails dev`.
   - Ensure you can send messages and receive responses from Ollama.
