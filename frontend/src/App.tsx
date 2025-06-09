@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
-import { HandleMessage } from "../wailsjs/go/main/App";
-import { EventsOn } from "../wailsjs/runtime"; // Import EventsOn
+import { HandleMessage, LoadPersonalData } from "../wailsjs/go/main/App"; // Import LoadPersonalData
+import { EventsOn, OpenDirectoryDialog } from "../wailsjs/runtime"; // Import EventsOn and OpenDirectoryDialog
 
 interface Message {
   id: number;
@@ -19,7 +19,9 @@ interface OllamaStreamEventPayload {
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState("");
-  const [isLoading, setIsLoading] = useState(false); // Loading state
+  const [isLoading, setIsLoading] = useState(false); // Loading state for chat messages
+  const [isDataLoading, setIsDataLoading] = useState(false); // Loading state for personal data
+  const [dataLoadingStatus, setDataLoadingStatus] = useState<string>(""); // Status message for data loading
   const currentAiMessageIdRef = useRef<number | null>(null); // To track the ID of the AI message being streamed
   const messageEndRef = useRef<null | HTMLDivElement>(null);
 
@@ -39,7 +41,7 @@ function App() {
           setMessages((prevMessages) =>
             prevMessages.map((msg) =>
               msg.id === currentAiMessageIdRef.current
-                ? { ...msg, text: msg.text + "\\n[Error: Malformed stream event]" }
+                ? { ...msg, text: (msg.text || "") + "\\\\n[Error: Malformed stream event]" } // Ensure msg.text is not null
                 : msg
             )
           );
@@ -55,7 +57,7 @@ function App() {
           setMessages((prevMessages) =>
             prevMessages.map((msg) =>
               msg.id === currentAiMessageIdRef.current
-                ? { ...msg, text: (msg.text || "") + `\\n[Error: ${data.error}]` }
+                ? { ...msg, text: (msg.text || "") + `\\\\n[Error: ${data.error}]` } // Ensure msg.text is not null
                 : msg
             )
           );
@@ -142,6 +144,29 @@ function App() {
     }
   };
 
+  const handleLoadData = async () => {
+    setIsDataLoading(true);
+    setDataLoadingStatus("Opening directory selection dialog...");
+    try {
+      const directoryPath = await OpenDirectoryDialog({
+        title: "Select Folder Containing Your Documents",
+      });
+
+      if (directoryPath) {
+        setDataLoadingStatus(`Loading documents from: ${directoryPath}...`);
+        const result = await LoadPersonalData(directoryPath);
+        setDataLoadingStatus(result); // Display result from Go (e.g., "Successfully loaded X chunks.")
+      } else {
+        setDataLoadingStatus("Document loading cancelled by user.");
+      }
+    } catch (error: any) {
+      console.error("Error loading personal data:", error);
+      setDataLoadingStatus(`Error loading documents: ${error.message || String(error)}`);
+    } finally {
+      setIsDataLoading(false);
+    }
+  };
+
   return (
     <div id="App">
       <div className="chat-container">
@@ -162,6 +187,12 @@ function App() {
             )}
           <div ref={messageEndRef} />
         </div>
+        <div className="data-loading-section">
+          <button className="load-data-button" onClick={handleLoadData} disabled={isDataLoading}>
+            {isDataLoading ? "Loading Data..." : "Load Personal Data"}
+          </button>
+          {dataLoadingStatus && <p className="data-loading-status">{dataLoadingStatus}</p>}
+        </div>
         <div className="input-area">
           <input
             type="text"
@@ -170,9 +201,9 @@ function App() {
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !isLoading && handleSendMessage()}
             placeholder="Type your message..."
-            disabled={isLoading}
+            disabled={isLoading || isDataLoading}
           />
-          <button className="send-button" onClick={handleSendMessage} disabled={isLoading}>
+          <button className="send-button" onClick={handleSendMessage} disabled={isLoading || isDataLoading}>
             Send
           </button>
         </div>

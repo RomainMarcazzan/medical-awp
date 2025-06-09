@@ -4,3 +4,5 @@
 export function Greet(arg1:string):Promise<string>;
 
 export function HandleMessage(arg1:string):Promise<string>;
+
+export function LoadPersonalData(arg1:string):Promise<string>;

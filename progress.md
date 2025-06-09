@@ -54,123 +54,112 @@
 
 ## Phase 3: RAG Backend Implementation (`app.go`)
 
-- [ ] **Define RAG Data Structures:**
-  - [ ] `DocumentChunk` struct: `ID int`, `Text string`, `Embedding []float64`, `SourceFile string`.
-  - [ ] Global or App-level variable: `documentStore []DocumentChunk` (for in-memory storage).
-  - [ ] Global or App-level variable: `nextDocumentID int`.
-  - [ ] Define constants/variables for `embeddingModelName` ("nomic-embed-text"), `chatModelName` ("llama3"), and `ollamaApiUrl` ("http://localhost:11434").
-- [ ] **Implement Ollama API Call for Embeddings:**
-  - [ ] Create `getOllamaEmbedding(text string) ([]float64, error)` function:
+- [x] **Define RAG Data Structures:**
+  - [x] `DocumentChunk` struct: `ID int`, `Text string`, `Embedding []float64`, `SourceFile string`.
+  - [x] Global or App-level variable: `documentStore []DocumentChunk` (for in-memory storage).
+  - [x] Global or App-level variable: `nextDocumentID int`.
+  - [x] Define constants/variables for `embeddingModelName` ("nomic-embed-text"), `chatModelName` ("llama3"), and `ollamaApiUrl` ("http://localhost:11434").
+- [x] **Implement Ollama API Call for Embeddings:**
+  - [x] Create `getOllamaEmbedding(text string) ([]float64, error)` function:
     - Constructs a request for Ollama's `/api/embeddings` endpoint using `embeddingModelName`.
     - Makes an HTTP POST request.
     - Parses the response and returns the embedding vector or an error.
-- [ ] **Implement Document Processing:**
-  - [ ] Create `chunkText(text string, chunkSize int, overlap int) []string` helper function (e.g., split by words, configurable size/overlap).
-  - [ ] Create `LoadPersonalData(directoryPath string) string` Wails-bindable method in `App` struct:
-    - [ ] Clears `documentStore`.
-    - [ ] Reads all `.txt` files from the provided `directoryPath`.
-    - [ ] For each file's content:
-      - [ ] Use `chunkText` to split it into manageable chunks.
-      - [ ] For each chunk:
-        - [ ] Call `getOllamaEmbedding` to get its embedding.
-        - [ ] Create a `DocumentChunk` object and add it to `documentStore`.
-        - [ ] Increment `nextDocumentID`.
-    - [ ] Return a status message (e.g., "Processed X files, Y chunks loaded.").
-    - [ ] Add logging for progress and errors.
-- [ ] **Implement Similarity Search:**
-  - [ ] Create `cosineSimilarity(vecA, vecB []float64) (float64, error)` function.
-  - [ ] Create `findRelevantChunks(queryEmbedding []float64, topN int) []DocumentChunk` function:
-    - [ ] Iterates through `documentStore`.
-    - [ ] Calculates cosine similarity between `queryEmbedding` and each chunk's embedding.
-    - [ ] Sorts chunks by similarity score (descending).
-    - [ ] Returns the top `N` most similar `DocumentChunk`s.
-- [ ] **Update `HandleMessage(userInput string) string` for RAG:**
-  - [ ] **Check `documentStore`:** If empty, log a message and proceed with a non-RAG call to `askOllamaChat` (from Phase 2, possibly refactored into its own function).
-  - [ ] **Get Query Embedding:** Call `getOllamaEmbedding` for the `userInput`. Handle errors.
-  - [ ] **Find Relevant Chunks:** Call `findRelevantChunks` (e.g., `topN = 3`).
-  - [ ] **Check Relevant Chunks:** If no relevant chunks are found, log a message and proceed with a non-RAG call.
-  - [ ] **Construct Augmented Prompt:**
-    - Start with a preamble (e.g., "Based on the following information from your documents:").
-    - Append the text of each relevant chunk (e.g., "--- Context from [SourceFile] ---\n[Chunk.Text]\n").
-    - Append the user's original question (e.g., "\n--- End of Context ---\n\nPlease answer this question: " + `userInput`).
+- [x] **Implement Document Processing:**
+  - [x] Create `chunkText(text string, chunkSize int, overlap int) []string` helper function (e.g., split by words, configurable size/overlap).
+  - [x] Create `LoadPersonalData(directoryPath string) string` Wails-bindable method in `App` struct:
+    - [x] Clears `documentStore`.
+    - [x] Reads all `.txt` files from the provided `directoryPath`.
+    - [x] For each file's content:
+      - [x] Use `chunkText` to split it into manageable chunks.
+      - [x] For each chunk:
+        - [x] Call `getOllamaEmbedding` to get its embedding.
+        - [x] Create a `DocumentChunk` object and add it to `documentStore`.
+        - [x] Increment `nextDocumentID`.
+    - [x] Return a status message (e.g., "Processed X files, Y chunks loaded.").
+    - [x] Add logging for progress and errors.
+- [x] **Implement Similarity Search:**
+  - [x] Create `cosineSimilarity(vecA, vecB []float64) (float64, error)` function.
+  - [x] Create `findRelevantChunks(queryEmbedding []float64, topN int) []DocumentChunk` function:
+    - [x] Iterates through `documentStore`.
+    - [x] Calculates cosine similarity between `queryEmbedding` and each chunk's embedding.
+    - [x] Sorts chunks by similarity score (descending).
+    - [x] Returns the top `N` most similar `DocumentChunk`s.
+- [x] **Update `HandleMessage(userInput string) string` for RAG:**
+  - [x] **Check `documentStore`:** If empty, log a message and proceed with a non-RAG call to `askOllamaChatRaw`.
+  - [x] **Get Query Embedding:** Call `getOllamaEmbedding` for the `userInput`. Handle errors by emitting an event.
+  - [x] **Find Relevant Chunks:** Call `findRelevantChunks` (e.g., `topN = 3`).
+  - [x] **Check Relevant Chunks:** If no relevant chunks are found, log a message and proceed with a non-RAG call.
+  - [x] **Construct Augmented Prompt:**
+    - Start with a preamble.
+    - Append the text of each relevant chunk.
+    - Append the user's original question.
     - Log the full augmented prompt.
-  - [ ] **Call Chat LLM:**
-    - Create a message list (e.g., `[]OllamaChatMessage{{Role: "user", Content: augmentedPrompt}}`).
-    - Call a refactored `askOllamaChat(messages []OllamaChatMessage) (string, error)` function with the augmented prompt.
-    - Handle errors.
-  - [ ] Return the LLM's response.
-- [ ] **Add Logging:** Ensure comprehensive logging throughout the RAG process (data loading, embedding generation, chunk retrieval, prompt construction, API calls).
+  - [x] **Call Chat LLM:**
+    - Create a message list with the (potentially augmented) prompt.
+    - Call `askOllamaChatRaw` with the messages.
+    - Handle errors (within `askOllamaChatRaw` by emitting events).
+  - [x] Return the LLM's response (empty string, actual response via events).
 
 ---
 
-## Phase 4: Frontend Integration (`App.tsx` or equivalent)
+## Phase 4: Frontend Integration (`App.tsx`)
 
-- [ ] **Add UI for Loading Personal Data:**
-  - [ ] Add a "Load Personal Data" button.
-  - [ ] On button click, use `window.runtime.OpenDirectoryDialog()` to let the user select a folder.
-  - [ ] If a folder is selected, call the Go `LoadPersonalData` method via `window.go.main.App.LoadPersonalData(selectedPath)`.
-  - [ ] Display a status message (e.g., "Loading data...", or the success/error message returned from Go) in the UI.
-- [ ] **Verify Chat Interface:**
-  - Ensure the existing chat input and message display still function correctly with the updated `HandleMessage` backend.
+- [x] **Add UI for Loading Personal Data:**
+  - [x] Add a "Load Personal Data" button.
+  - [x] On button click, use `window.runtime.OpenDirectoryDialog()` to let the user select a folder.
+  - [x] If a folder is selected, call the Go `LoadPersonalData` method.
+  - [x] Display a status message in the UI (e.g., "Loading...", "X documents loaded", "Error: ...").
+- [x] **Verify Chat Interface:**
+  - [x] Ensure the chat still works as expected after the RAG backend changes.
+  - [x] Test sending messages with and without personal data loaded.
 - [ ] **(Optional) Display Context Source:**
-  - Consider if/how you might indicate to the user that the answer was derived from their documents (e.g., by listing source files if the Go backend can provide this info with the response).
+  - [ ] If RAG is used, consider displaying which document chunks were used as context for the AI's response.
+    - This might involve modifying the `ollamaStreamEvent` or adding a new event to pass source information.
+    - Update the UI to show this information, perhaps subtly or on hover/click.
 
 ---
 
-## Phase 5: Testing & Refinement (Windows)
+## Phase 5: Testing & Refinement
 
-- [ ] **Prepare Test Data:** Create a folder on your Windows machine with several `.txt` files containing diverse content.
-- [ ] **Run `wails dev`**.
-- [ ] **Test `LoadPersonalData`:**
-  - [ ] Click the "Load Personal Data" button and select your test folder.
-  - [ ] Check the Wails console (terminal output) for logs from `app.go` regarding file processing, chunking, and embedding.
-  - [ ] Verify the status message displayed in the UI.
-- [ ] **Test RAG Queries:**
-  - [ ] Ask questions specifically related to the content of your test documents.
-  - [ ] Check console logs to see:
-    - The query embedding being generated.
-    - Which chunks are identified as relevant.
-    - The full augmented prompt sent to Ollama.
-  - [ ] Evaluate the quality and relevance of the LLM's responses.
-- [ ] **Test Fallback Behavior:**
-  - [ ] Ask questions _before_ loading any personal data. Verify it uses the general chat mode.
-  - [ ] Ask questions unrelated to your loaded documents. Verify it either uses general chat mode or indicates no relevant context was found.
-- [ ] **Test Error Handling:**
-  - [ ] Try running the app with Ollama service stopped.
-  - [ ] Try querying with a model name that hasn't been pulled in Ollama.
-  - [ ] Try loading data from an empty or non-existent directory.
-- [ ] **Debug:** Address any bugs or unexpected behavior in both the Go backend and React frontend.
-- [ ] **Iterate:** Refine chunking strategy, `topN` for relevant chunks, and prompt engineering for better results.
+- [ ] **Comprehensive Testing:**
+  - [ ] Test with various `.txt` files (empty, large, different encodings if applicable).
+  - [ ] Test with different folder structures.
+  - [ ] Test edge cases for chunking and embedding.
+  - [ ] Test error handling for Ollama API calls (e.g., Ollama service down, model not available).
+  - [ ] Test UI responsiveness and error display.
+- [ ] **Refine Chunking Strategy:**
+  - [ ] Experiment with `chunkSize` and `overlap` for optimal RAG performance.
+  - [ ] Consider more advanced chunking methods if needed (e.g., sentence splitting).
+- [ ] **Refine Prompt Engineering:**
+  - [ ] Optimize the augmented prompt structure for clarity and effectiveness.
+- [ ] **Improve Error Handling and User Feedback:**
+  - [ ] Ensure all errors are caught gracefully and informative messages are shown to the user.
+- [ ] **Code Cleanup and Optimization:**
+  - [ ] Refactor code for readability and maintainability.
+  - [ ] Optimize performance where necessary.
 
 ---
 
 ## Phase 6: Build for Distribution (Windows)
 
 - [ ] **Build the Application:**
-  - Run `wails build` in the project root. This will create an `.exe` file in the `build/bin` directory.
-- [ ] **Test the Executable:**
-  - Run the generated `.exe` file directly.
-  - Retest core functionalities (loading data, RAG chat).
-- [ ] **Document Prerequisites for Users:**
-  - Clearly state that users need to have Ollama for Windows installed.
-  - Specify which Ollama models need to be pulled (e.g., `ollama pull llama3`, `ollama pull nomic-embed-text`).
+  - Run `wails build`.
+  - This will create an executable in the `build/bin` directory.
+- [ ] **Test the Standalone Build:**
+  - Run the executable on a Windows machine (ideally one that didn't have the dev environment).
+  - Ensure Ollama (and its models) are set up on the test machine as a prerequisite.
+- [ ] **(Optional) Create an Installer:**
+  - Consider using a tool like NSIS or Inno Setup to create an installer for easier distribution.
+- [ ] **Document Prerequisites:**
+  - Clearly document that users need to have Ollama installed and the required models (`llama3`, `nomic-embed-text`) pulled.
 
 ---
 
-## Future Enhancements (Optional - Post MVP)
+## Future Enhancements (Post-MVP)
 
-- [ ] Support more file types (e.g., PDF, DOCX) by integrating Go libraries for parsing them.
-- [ ] Implement a persistent vector database (e.g., LanceDB, ChromaDB via Go bindings) instead of the in-memory `documentStore` for larger datasets and persistence across sessions.
-- [ ] Improve text chunking strategy (e.g., semantic chunking, sentence-aware splitting).
-- [ ] More sophisticated prompt engineering for RAG.
-- [ ] Add a UI section for users to manage loaded data sources (e.g., view loaded files, re-index).
-- [ ] Implement streaming responses from Ollama for a more interactive chat experience.
-- [ ] Add settings for users to configure Ollama model names or API endpoint if needed.
-
----
-
-**Notes:**
-
-- Remember to handle errors gracefully at each step and provide feedback to the user.
-- Logging in the Go backend (visible in the `wails dev` console) will be crucial for debugging.
-- This plan assumes a basic in-memory RAG. For production or large datasets, a proper vector database is recommended.
+- [ ] Support for more document types (e.g., `.pdf`, `.docx`) using Go libraries.
+- [ ] Persistent document store (e.g., using SQLite or a simple file-based database) instead of in-memory.
+- [ ] UI for managing loaded documents (e.g., view list, remove documents).
+- [ ] Option to select different Ollama models from the UI.
+- [ ] More sophisticated RAG techniques (e.g., re-ranking, query transformations).
+- [ ] Cross-platform builds (macOS, Linux) if desired.
