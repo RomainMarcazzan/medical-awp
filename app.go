@@ -14,7 +14,9 @@ import (
 	"path/filepath"
 	"sort" // Added for sort.Slice
 	"strings"
-	"sync" // Added for mutex
+	"sync"         // Added for mutex
+	"time"         // Added for timing
+	"unicode/utf8" // Added for rune counting
 
 	"github.com/go-ole/go-ole"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -75,14 +77,11 @@ func (a *App) startup(ctx context.Context) {
 }
 
 // shutdown is called when the app is shutting down.
+//
+//lint:ignore U1000 Wails lifecycle method - shutdown is called when the app is shutting down.
 func (a *App) shutdown(_ context.Context) { // Changed ctx to _
 	log.Println("App shutting down. Uninitializing COM.")
 	ole.CoUninitialize() // Uninitialize COM for this thread
-}
-
-// Greet returns a greeting for the given name
-func (a *App) Greet(name string) string {
-	return fmt.Sprintf("Hello %s, It's show time!", name)
 }
 
 // OllamaChatMessage defines the structure for a message in the Ollama API
@@ -111,9 +110,11 @@ type OllamaChatResponse struct { // Ensure this type is used consistently
 
 // OllamaStreamEvent is the payload sent to the frontend for each stream event
 type OllamaStreamEvent struct {
-	Content string `json:"content,omitempty"`
-	Done    bool   `json:"done"`
-	Error   string `json:"error,omitempty"`
+	Content        string  `json:"content,omitempty"`
+	Done           bool    `json:"done"`
+	Error          string  `json:"error,omitempty"`
+	DurationMs     int64   `json:"durationMs,omitempty"`     // Total duration for the response in milliseconds
+	RunesPerSecond float64 `json:"runesPerSecond,omitempty"` // Processed runes per second
 }
 
 // OllamaEmbeddingRequest defines the structure for the Ollama API embedding request
@@ -353,6 +354,7 @@ type rankedChunk struct {
 }
 
 // findRelevantChunks finds the top N most similar document chunks to a query embedding.
+
 func (a *App) findRelevantChunks(queryEmbedding []float64, topN int) []DocumentChunk {
 	if len(a.documentStore) == 0 {
 		log.Println("Document store is empty. Cannot find relevant chunks.")
@@ -395,19 +397,36 @@ func (a *App) findRelevantChunks(queryEmbedding []float64, topN int) []DocumentC
 	return resultChunks
 }
 
-// sendErrorEvent is a helper to emit an error event to the frontend.
-func (a *App) sendErrorEvent(errMessage string) {
-	log.Println("Sending error event to frontend:", errMessage)
-	runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{Error: errMessage, Done: true})
-}
-
 // askOllamaChatRaw sends a request to Ollama's chat API and streams the response via Wails events.
 // It should be run in a goroutine.
 func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) { // Changed parameter type to OllamaChatMessage
+	startTime := time.Now()
+	totalRunes := 0
+	var finalErrorMessage string
+	var accumulatedContent strings.Builder // Accumulate content here for the final event if needed, or just for rune counting
+
 	// Ensure a final "done" event is sent when this function exits, regardless of path.
 	defer func() {
-		log.Println("askOllamaChatRaw finished. Sending final 'done' event to client.")
-		runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{Done: true}) // Use struct
+		duration := time.Since(startTime)
+		durationMs := duration.Milliseconds()
+		runesPerSecond := 0.0
+		if duration.Seconds() > 0 && totalRunes > 0 {
+			runesPerSecond = float64(totalRunes) / duration.Seconds()
+		}
+
+		log.Printf("askOllamaChatRaw finished. Total runes: %d, Duration: %s (%.2f ms), Runes/s: %.2f. Sending final 'done' event.",
+			totalRunes, duration, float64(durationMs), runesPerSecond)
+
+		// The 'Content' field in this final 'done' event can be empty if all content was streamed progressively.
+		// Or, if frontend prefers, accumulatedContent.String() could be sent here.
+		// For now, individual chunks are sent, and this final event just signals completion and metrics.
+		runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{
+			Done:           true,
+			Error:          finalErrorMessage,
+			DurationMs:     durationMs,
+			RunesPerSecond: runesPerSecond,
+			// Content: accumulatedContent.String(), // Optionally send all content again, or leave for progressive updates
+		})
 	}()
 
 	ollamaChatURL := ollamaApiUrl + "/chat" // Corrected URL construction
@@ -421,7 +440,8 @@ func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) { // Changed parame
 	if err != nil {
 		errMsg := fmt.Sprintf("error marshalling ollama request: %v", err)
 		log.Println(errMsg)
-		a.sendErrorEvent(errMsg)
+		// a.sendErrorEvent(errMsg) // Deprecated
+		finalErrorMessage = errMsg
 		return // Defers will run, including the done event
 	}
 
@@ -432,7 +452,8 @@ func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) { // Changed parame
 	if err != nil {
 		errMsg := fmt.Sprintf("error creating ollama request: %v", err)
 		log.Println(errMsg)
-		a.sendErrorEvent(errMsg)
+		// a.sendErrorEvent(errMsg) // Deprecated
+		finalErrorMessage = errMsg
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -442,12 +463,14 @@ func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) { // Changed parame
 		// Check for context cancellation (e.g., app closing)
 		if a.ctx.Err() != nil {
 			log.Printf("Ollama request cancelled (context error): %v", a.ctx.Err())
-			// No need to send error event if app is closing, defer will send done.
+			// No need to set finalErrorMessage if app is closing, defer will send done.
+			// finalErrorMessage = fmt.Sprintf("Request cancelled: %v", a.ctx.Err()) // Or set it if you want to show this specific error
 			return
 		}
 		errMsg := fmt.Sprintf("error sending request to ollama: %v", err)
 		log.Println(errMsg)
-		a.sendErrorEvent(errMsg)
+		// a.sendErrorEvent(errMsg) // Deprecated
+		finalErrorMessage = errMsg
 		return
 	}
 	defer resp.Body.Close()
@@ -456,7 +479,8 @@ func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) { // Changed parame
 		bodyBytes, _ := io.ReadAll(resp.Body) // Best effort to read body for error
 		errMsg := fmt.Sprintf("ollama API request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
 		log.Println(errMsg)
-		a.sendErrorEvent(errMsg)
+		// a.sendErrorEvent(errMsg) // Deprecated
+		finalErrorMessage = errMsg
 		return
 	}
 
@@ -466,6 +490,7 @@ func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) { // Changed parame
 		// Check context in loop to allow for cancellation during long streams
 		if a.ctx.Err() != nil {
 			log.Printf("Stream processing cancelled (context error): %v", a.ctx.Err())
+			// finalErrorMessage = fmt.Sprintf("Stream cancelled: %v", a.ctx.Err()) // Optional: set error message
 			return // Exit, defer will send final done event
 		}
 		line := scanner.Bytes()
@@ -477,14 +502,18 @@ func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) { // Changed parame
 		if err := json.Unmarshal(line, &ollamaResp); err != nil {
 			errMsg := fmt.Sprintf("error unmarshalling stream response: %v. Line: %s", err, string(line))
 			log.Println(errMsg)
-			a.sendErrorEvent(errMsg) // Send error for this chunk
-			continue                 // Try next line
+			// a.sendErrorEvent(errMsg) // Send error for this chunk // Deprecated
+			// If unmarshal fails, we might consider the stream corrupted and stop.
+			finalErrorMessage = errMsg // Set the error and let defer handle it.
+			return                     // Stop processing stream.
 		}
 
 		if ollamaResp.Message.Content != "" {
+			totalRunes += utf8.RuneCountInString(ollamaResp.Message.Content)
+			accumulatedContent.WriteString(ollamaResp.Message.Content)        // Keep accumulating for accurate total rune count
 			runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{ // Use struct
 				Content: ollamaResp.Message.Content,
-				Done:    false,
+				Done:    false, // This is an intermediate chunk
 			})
 		}
 
@@ -500,77 +529,100 @@ func (a *App) askOllamaChatRaw(messages []OllamaChatMessage) { // Changed parame
 		if a.ctx.Err() == nil {
 			errMsg := fmt.Sprintf("error reading stream response: %v", err)
 			log.Println(errMsg)
-			a.sendErrorEvent(errMsg)
+			// a.sendErrorEvent(errMsg) // Deprecated
+			if finalErrorMessage == "" { // Only set if not already set by a more specific error
+				finalErrorMessage = errMsg
+			}
 		}
+		// Defer will handle sending the final event
+		return
 	}
 
-	if streamEndedByOllama {
-		log.Println("Stream officially done according to Ollama chunk.")
-	} else {
-		log.Println("Stream scanner finished without explicit 'done' from Ollama chunk (e.g. EOF or error). Final 'done' event will still be sent by defer.")
+	if !streamEndedByOllama && finalErrorMessage == "" {
+		log.Println("Stream ended without Ollama signaling 'done' and no prior errors. This is unusual but handled.")
+		// The defer function will still send a 'done' event with metrics.
 	}
-	// The deferred runtime.EventsEmit for {"done": true} will handle the final notification.
+	// Normal exit: defer function sends the final done event with metrics.
 }
 
-// HandleMessage is the main Wails-bindable method for handling user chat messages.
-func (a *App) HandleMessage(userInput string) string {
-	log.Printf("Received message from user: %s", userInput)
+// HandleMessage is called when the user sends a message.
+// It processes the input, performs RAG, and triggers AI response streaming.
+func (a *App) HandleMessage(userInput string) error {
+	log.Printf("HandleMessage received: %s", userInput)
 
-	var messagesToOllama []OllamaChatMessage // Changed to use OllamaChatMessage
-
-	a.mu.Lock()
-	isDocStoreEmpty := len(a.documentStore) == 0
-
-	if isDocStoreEmpty {
-		a.mu.Unlock()
-		log.Println("Document store is empty. Proceeding with non-RAG chat.")
-		messagesToOllama = []OllamaChatMessage{{Role: "user", Content: userInput}}
-	} else {
-		log.Println("Document store found. Proceeding with RAG chat.")
-		queryEmbedding, err := a.getOllamaEmbedding(userInput)
-		if err != nil {
-			a.mu.Unlock()
-			// Send an error event AND a done event to ensure frontend stops loading
-			// It's important that sendErrorEvent itself sends Done:true
-			// If getOllamaEmbedding fails, we need to signal the frontend that the operation is over.
-			errMsg := fmt.Sprintf("Failed to get embedding for RAG query: %v", err)
-			a.sendErrorEvent(errMsg) // This already sends {Error: errMsg, Done: true}
-			// The defer in askOllamaChatRaw won't run if we don't call it.
-			// So, if we error out here, we must ensure the UI knows the stream is "done".
-			// sendErrorEvent handles this.
-			// Also emit an empty context event to clear any previous context on the frontend
-			runtime.EventsEmit(a.ctx, "ragContextSources", []SourceInfo{})
-			return "" // Return immediately, error and done signal sent.
-		}
-
-		relevantChunks := a.findRelevantChunks(queryEmbedding, 3)
-		a.mu.Unlock() // Unlock after document store access is complete
-
-		var sourcesForFrontend []SourceInfo
-		if len(relevantChunks) == 0 {
-			log.Println("No relevant chunks found. Proceeding with non-RAG chat.")
-			messagesToOllama = []OllamaChatMessage{{Role: "user", Content: userInput}}
-			// Emit empty sources if no relevant chunks found for RAG
-			sourcesForFrontend = []SourceInfo{}
-		} else {
-			log.Printf("Found %d relevant chunks for the query.", len(relevantChunks))
-			var contextBuilder strings.Builder
-			sourcesForFrontend = make([]SourceInfo, len(relevantChunks))
-			for i, chunk := range relevantChunks {
-				log.Printf("Relevant chunk %d: ID %d, Source: %s, Score: %.4f", i+1, chunk.ID, chunk.SourceFile, chunk.Score)
-				fmt.Fprintf(&contextBuilder, "--- Context from %s (ID: %d, Score: %.2f) ---\\n%s\\n\\n", chunk.SourceFile, chunk.ID, chunk.Score, chunk.Text)
-				sourcesForFrontend[i] = SourceInfo{FileName: chunk.SourceFile, ChunkID: chunk.ID, Score: chunk.Score}
-			}
-
-			augmentedPrompt := fmt.Sprintf("Based on the following information from your documents:\\n\\n%s--- End of Context ---\\n\\nPlease answer this question: %s", contextBuilder.String(), userInput)
-			log.Printf("Augmented prompt:\\n%s", augmentedPrompt)
-			messagesToOllama = []OllamaChatMessage{{Role: "user", Content: augmentedPrompt}}
-		}
-		// Emit the source info for the frontend before starting the AI response stream
-		runtime.EventsEmit(a.ctx, "ragContextSources", sourcesForFrontend)
+	// 1. Get embedding for the user input
+	queryEmbedding, err := a.getOllamaEmbedding(userInput)
+	if err != nil {
+		errMsg := fmt.Sprintf("Error getting embedding for your message: %v", err)
+		log.Println(errMsg)
+		// Send an error event to the frontend immediately
+		runtime.EventsEmit(a.ctx, "ollamaStreamEvent", OllamaStreamEvent{
+			Error: errMsg,
+			Done:  true, // Signal completion of this attempt
+		})
+		return fmt.Errorf("%s", errMsg) // Also return error to Wails caller
 	}
 
-	go a.askOllamaChatRaw(messagesToOllama)
+	// 2. Find relevant chunks
+	topN := 3 // Number of relevant chunks to retrieve
+	log.Printf("Finding top %d relevant chunks for input: '%s'", topN, userInput)
+	relevantChunks := a.findRelevantChunks(queryEmbedding, topN)
 
-	return ""
+	// Prepare source information for the frontend
+	sourceInfos := make([]SourceInfo, 0, len(relevantChunks))
+	for _, chunk := range relevantChunks {
+		sourceInfos = append(sourceInfos, SourceInfo{
+			FileName: chunk.SourceFile,
+			ChunkID:  chunk.ID,
+			Score:    chunk.Score,
+		})
+	}
+
+	// Emit an event with RAG sources *before* starting the AI response stream
+	// This allows the UI to display sources immediately.
+	if len(sourceInfos) > 0 {
+		log.Printf("Emitting %d RAG sources via 'ragSourcesEvent'", len(sourceInfos))
+		runtime.EventsEmit(a.ctx, "ragSourcesEvent", sourceInfos)
+	} else {
+		log.Println("No RAG sources found to emit.")
+	}
+
+	// 3. Construct context from relevant chunks
+	var contextBuilder strings.Builder
+	if len(relevantChunks) > 0 {
+		contextBuilder.WriteString("Use the following context to answer the user's question:\n\n")
+		for i, chunk := range relevantChunks {
+			contextBuilder.WriteString(fmt.Sprintf("Context from document '%s' (Chunk %d, Relevance: %.2f):\n", chunk.SourceFile, chunk.ID, chunk.Score))
+			contextBuilder.WriteString(chunk.Text)
+			if i < len(relevantChunks)-1 {
+				contextBuilder.WriteString("\n\n---\n\n") // Separator between chunks
+			} else {
+				contextBuilder.WriteString("\n\n")
+			}
+		}
+		log.Printf("Constructed RAG context (length: %d chars)", contextBuilder.Len())
+	} else {
+		log.Println("No relevant chunks found or RAG context is empty.")
+	}
+
+	// 4. Formulate the prompt for the LLM
+	var llmPrompt string
+	if contextBuilder.Len() > 0 {
+		llmPrompt = contextBuilder.String() + "User's question: " + userInput
+	} else {
+		llmPrompt = userInput // No RAG context, just send the raw user input
+	}
+
+	// 5. Prepare messages for Ollama
+	messages := []OllamaChatMessage{
+		// Optional: Add a system prompt here if desired
+		// {Role: "system", Content: "You are a helpful assistant. Please use the provided context to answer the user's question. If the context is not relevant, say so."},
+		{Role: "user", Content: llmPrompt},
+	}
+
+	// 6. Call askOllamaChatRaw in a goroutine to handle streaming
+	log.Printf("Calling askOllamaChatRaw with LLM prompt (first 100 chars of user content): %s...", llmPrompt[:min(len(llmPrompt), 100)])
+	go a.askOllamaChatRaw(messages)
+
+	return nil // Indicate success for the synchronous part of HandleMessage
 }

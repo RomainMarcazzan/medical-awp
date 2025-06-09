@@ -69,6 +69,97 @@
   text-align: left; /* Ensure code blocks and inline code are left-aligned */
 }
 
+.message.ai.full-width-markdown pre code {
+  display: block;
+  padding: 1rem;
+  word-wrap: normal; /* Allow horizontal scrolling */
+  overflow-x: auto; /* Enable horizontal scrollbar */
+  white-space: pre; /* Preserve whitespace and line breaks */
+  background-color: #2d2d2d; /* Darker background for code blocks */
+  border-radius: 4px;
+  color: #f0f0f0; /* Light text color for code */
+  font-family: "Courier New", Courier, monospace;
+  font-size: 0.9em;
+}
+
+/* Custom scrollbar for code blocks */
+.message.ai.full-width-markdown pre::-webkit-scrollbar {
+  height: 8px; /* Height of horizontal scrollbar */
+  width: 8px; /* Width of vertical scrollbar (if ever needed) */
+}
+
+.message.ai.full-width-markdown pre::-webkit-scrollbar-track {
+  background: #3a3a3a; /* Track color */
+  border-radius: 4px;
+}
+
+.message.ai.full-width-markdown pre::-webkit-scrollbar-thumb {
+  background: #555; /* Thumb color */
+  border-radius: 4px;
+}
+
+.message.ai.full-width-markdown pre::-webkit-scrollbar-thumb:hover {
+  background: #666; /* Thumb color on hover */
+}
+
+.message-item-container {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 10px; /* Space between message items */
+}
+
+.ai-message-extras {
+  font-size: 0.8em;
+  color: #aaa;
+  margin-top: 5px;
+  margin-left: 10px; /* Align with AI message padding */
+  padding: 5px 0;
+  border-top: 1px solid #444; /* Separator line */
+}
+
+.ai-message-metrics {
+  font-size: 0.8em;
+  color: #aaa; /* Restored original color */
+  margin-top: 3px;
+}
+
+.ai-message-metrics span {
+  margin-right: 10px;
+  /* color: limegreen !important; */ /* Removed temporary color */
+}
+
+.error-indicator {
+  color: red;
+  font-weight: bold;
+}
+
+.rag-sources-container {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px dashed #555; /* Dashed separator for sources */
+}
+
+.rag-sources-container h4 {
+  font-size: 0.85em;
+  margin-bottom: 3px;
+  color: #ccc;
+}
+
+.rag-source-item {
+  font-size: 0.75em;
+  color: #999;
+  margin-left: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 95%; /* Prevent very long paths from breaking layout */
+}
+
+/* Ensure user messages don't pick up ai-message-extras styling if structure changes */
+.message.user + .ai-message-extras {
+  display: none;
+}
+
 .message p {
   margin: 0;
   font-size: 0.95em;

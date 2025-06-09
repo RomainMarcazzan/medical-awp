@@ -9,6 +9,10 @@ interface Message {
   id: number;
   text: string;
   sender: "user" | "ai";
+  durationMs?: number;
+  runesPerSecond?: number;
+  isError?: boolean;
+  sources?: SourceInfo[]; // Added to store sources directly with the AI message
 }
 
 // Define the structure of the event payload from Go
@@ -16,6 +20,8 @@ interface OllamaStreamEventPayload {
   content?: string; // content can be empty, especially in the final 'done' message
   done: boolean;
   error?: string;
+  durationMs?: number;
+  runesPerSecond?: number;
 }
 
 // Define the SourceInfo interface to match the Go struct
@@ -46,80 +52,100 @@ function App() {
   useEffect(() => {
     console.log("JS: App component mounted. Attempting to register ollamaStreamEvent listener.");
 
-    // Updated interface to match observed event data
+    // Updated interface to match observed event data - This local interface is not strictly necessary
+    // if OllamaStreamEventPayload is correctly defined and used above.
+    /*
     interface OllamaStreamEventData {
       content?: string; // Content is present for chunks
-      done: boolean; // True when the stream is complete
+      done: boolean;    // True when the stream is complete
     }
+    */
 
     const unlistenOllama = EventsOn("ollamaStreamEvent", (eventData: OllamaStreamEventPayload) => {
-      // Changed to use OllamaStreamEventPayload
-      console.log("JS: ollamaStreamEvent received:", eventData);
+      console.log("JS: ollamaStreamEvent received in listener:", JSON.stringify(eventData));
 
-      if (eventData.error) {
-        console.error("JS: Ollama stream error:", eventData.error);
-        setMessages((prevMessages) => {
-          const newMessages = [...prevMessages];
-          const aiMessageIndex = newMessages.findIndex((msg) => msg.id === currentAiMessageIdRef.current);
-          if (aiMessageIndex !== -1) {
-            newMessages[aiMessageIndex] = {
-              ...newMessages[aiMessageIndex],
-              text:
-                newMessages[aiMessageIndex].text.length > 0
-                  ? `\${newMessages[aiMessageIndex].text}\n[Error: \${eventData.error}]`
-                  : `[Error: \${eventData.error}]`,
-            };
-          } else {
-            // If no placeholder, add a new error message
-            newMessages.push({ id: Date.now(), text: `[Error: \${eventData.error}]`, sender: "ai" });
-          }
-          return newMessages;
-        });
-        setIsLoading(false); // Stop loading on error
-        currentAiMessageIdRef.current = null; // Reset ref on error
-        return; // Stop further processing for this event
-      }
+      if (eventData.done) {
+        // Only process "done" if we are still expecting it for a specific message
+        if (currentAiMessageIdRef.current !== null) {
+          const messageIdToUpdate = currentAiMessageIdRef.current;
+          // Nullify the ref *before* the setMessages call for this stream's "done" event.
+          // This makes the "done" processing for a given stream idempotent.
+          currentAiMessageIdRef.current = null;
 
-      setMessages((prevMessages) => {
-        const newMessages = [...prevMessages];
-        const aiMessageIndex = newMessages.findIndex((msg) => msg.id === currentAiMessageIdRef.current);
-
-        if (eventData.done) {
-          console.log("JS: Ollama stream processing marked as done.");
-          setIsLoading(false); // Stop loading when stream is done
-          currentAiMessageIdRef.current = null; // Reset ref when stream is done
-          // No text update needed here, just finalize loading state
-          return newMessages;
-        }
-
-        if (typeof eventData.content === "string") {
-          if (aiMessageIndex !== -1) {
-            newMessages[aiMessageIndex] = {
-              ...newMessages[aiMessageIndex],
-              text: newMessages[aiMessageIndex].text + eventData.content,
-            };
-          } else {
-            // This case should ideally not be hit if placeholder is always added
-            console.warn(
-              "JS: Received stream content, but AI message placeholder not found by ID. Appending to last AI message or creating new."
+          setMessages((prevMessages) => {
+            console.log(
+              `JS: Processing 'done' event for message ID: ${messageIdToUpdate}. Data:`,
+              JSON.stringify(eventData)
             );
-            const lastMessage = newMessages[newMessages.length - 1];
-            if (lastMessage && lastMessage.sender === "ai" && !currentAiMessageIdRef.current) {
-              // Append if no active stream ID
-              lastMessage.text += eventData.content;
-            } else if (!currentAiMessageIdRef.current) {
-              // Create new if no active stream ID and last wasn't AI
-              newMessages.push({ id: Date.now(), text: eventData.content, sender: "ai" });
+            setIsLoading(false); // Also set isLoading to false here
+            const newMessages = [...prevMessages];
+            const aiMessageIndex = newMessages.findIndex((msg) => msg.id === messageIdToUpdate);
+
+            if (aiMessageIndex !== -1) {
+              newMessages[aiMessageIndex] = {
+                ...newMessages[aiMessageIndex],
+                durationMs: eventData.durationMs,
+                runesPerSecond: eventData.runesPerSecond,
+                isError: !!eventData.error,
+              };
+              if (eventData.error && newMessages[aiMessageIndex].text.length === 0) {
+                newMessages[aiMessageIndex].text = `[Error: ${eventData.error}]`;
+              } else if (eventData.error) {
+                newMessages[aiMessageIndex].text += `\\\\n[Error: ${eventData.error}]`;
+              }
+              console.log("JS: AI Message updated with metrics:", JSON.stringify(newMessages[aiMessageIndex]));
+            } else {
+              // This case should be less likely now with the outer check, but good for robustness
+              console.warn(
+                `JS: 'done' event (for ID ${messageIdToUpdate}) processed, but no matching AI message found in prevMessages.`
+              );
             }
-          }
+            return newMessages;
+          });
+        } else {
+          console.warn(
+            "JS: 'done' event received, but currentAiMessageIdRef was already null (likely a duplicate or late event). Data:",
+            JSON.stringify(eventData)
+          );
         }
-        return newMessages;
-      });
+      } else if (typeof eventData.content === "string") {
+        // Process intermediate content chunks only if there's an active AI message stream
+        if (currentAiMessageIdRef.current !== null) {
+          setMessages((prevMessages) => {
+            const newMessages = [...prevMessages];
+            const aiMessageIndex = newMessages.findIndex((msg) => msg.id === currentAiMessageIdRef.current);
+            if (aiMessageIndex !== -1) {
+              newMessages[aiMessageIndex] = {
+                ...newMessages[aiMessageIndex],
+                text: newMessages[aiMessageIndex].text + eventData.content,
+              };
+            } else {
+              // This might happen if a content chunk arrives after its stream's "done" event was processed (due to async nature)
+              console.warn(
+                "JS: Intermediate stream data received, but no matching AI message found (currentAiMessageIdRef might have been nulled). ID ref:",
+                currentAiMessageIdRef.current, // This will be null if "done" was processed
+                "Event Content:",
+                eventData.content
+              );
+            }
+            return newMessages;
+          });
+        } else {
+          console.warn(
+            "JS: Intermediate stream data received, but no active AI message (currentAiMessageIdRef is null). Discarding. Data:",
+            JSON.stringify(eventData)
+          );
+        }
+      } else if (eventData.content !== undefined) {
+        // Content is present but not a string, and not a "done" event
+        console.warn("JS: Received event with non-string content (and not done):", JSON.stringify(eventData));
+      }
+      // No explicit return needed from EventsOn callback itself
     });
 
     // Listener for RAG context sources
-    const unlistenContext = EventsOn("ragContextSources", (sources: SourceInfo[]) => {
-      console.log("JS: ragContextSources received:", sources);
+    const unlistenContext = EventsOn("ragSourcesEvent", (sources: SourceInfo[]) => {
+      console.log("JS: ragSourcesEvent received:", sources);
       setRagSources(sources);
     });
 
@@ -173,30 +199,22 @@ function App() {
     };
 
     // Add user message and AI placeholder to state
-    // Use a functional update to ensure we're working with the latest state
     setMessages((prevMessages) => [...prevMessages, newUserMessage, newAiMessagePlaceholder]);
 
     const currentInput = input;
     setInput("");
 
     try {
-      const initialResponse = await HandleMessage(currentInput);
-      if (initialResponse) {
-        // Non-empty string indicates an error from Go before streaming
-        console.error("Error from HandleMessage (Go):", initialResponse);
-        setMessages((prevMessages) =>
-          prevMessages.map((msg) => (msg.id === newAiMessageId ? { ...msg, text: initialResponse } : msg))
-        );
-        setIsLoading(false);
-        currentAiMessageIdRef.current = null;
-      }
-      // If initialResponse is empty, streaming has started or will start.
-      // The EventsOn listener handles further updates and setting isLoading to false.
+      await HandleMessage(currentInput);
+      // If HandleMessage completes without throwing an error,
+      // it means the message was sent to the Go backend successfully.
+      // Streaming will be handled by the EventsOn listener.
+      // The 'isLoading' state will be set to false by the 'done' event from the stream.
     } catch (error) {
       console.error("Error calling HandleMessage (JS):", error);
       setMessages((prevMessages) =>
         prevMessages.map((msg) =>
-          msg.id === newAiMessageId ? { ...msg, text: "Sorry, an error occurred while sending your message." } : msg
+          msg.id === newAiMessageId ? { ...msg, text: `Sorry, an error occurred: ${error}`, isError: true } : msg
         )
       );
       setIsLoading(false);
@@ -225,26 +243,72 @@ function App() {
     <div id="App">
       <div className="chat-container">
         <div className="message-list">
-          {messages.map((msg) => (
-            // Message bubble
-            <div
-              key={msg.id}
-              className={`message ${msg.sender === "user" ? "user" : "ai"}${
-                msg.sender === "ai" ? " full-width-markdown" : ""
-              }`}
-            >
-              {msg.sender === "ai" && isLoading && msg.text === "" && currentAiMessageIdRef.current === msg.id ? (
-                <div style={{ display: "flex", alignItems: "center" }}>
-                  <div className="loader"></div>
-                  <span>Thinking...</span>
+          {messages.map((msg) => {
+            // <<< START ADDED CONSOLE LOG >>>
+            if (msg.sender === "ai") {
+              console.log(
+                `Rendering AI Message ID: ${msg.id}, Done Loading: ${!(
+                  isLoading && currentAiMessageIdRef.current === msg.id
+                )}, Duration: ${msg.durationMs}, Speed: ${msg.runesPerSecond}, IsError: ${msg.isError}`
+              );
+            }
+            // <<< END ADDED CONSOLE LOG >>>
+            return (
+              // Each message item now includes the message div and its extras div
+              <div key={msg.id} className="message-item-container">
+                <div
+                  className={`message ${msg.sender === "user" ? "user" : "ai"}${
+                    msg.sender === "ai" ? " full-width-markdown" : ""
+                  }`}
+                >
+                  {msg.sender === "ai" ? (
+                    isLoading && currentAiMessageIdRef.current === msg.id && msg.text.length === 0 ? (
+                      <div className="loader-container">
+                        <div className="loader"></div>
+                        <span>Thinking...</span>
+                      </div>
+                    ) : (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+                    )
+                  ) : (
+                    msg.text
+                  )}
                 </div>
-              ) : msg.sender === "ai" ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
-              ) : (
-                <p style={{ whiteSpace: "pre-wrap" }}>{msg.text}</p>
-              )}
-            </div>
-          ))}
+                {/* Display RAG sources and metrics for AI messages */}
+                {msg.sender === "ai" && (
+                  <div className="ai-message-extras">
+                    {/* RAG Sources Display - if msg.sources is populated */}
+                    {msg.sources && msg.sources.length > 0 && (
+                      <div className="rag-sources-display">
+                        <strong>Sources:</strong>
+                        <ul>
+                          {msg.sources.map((source, index) => (
+                            <li key={index}>
+                              {source.fileName} (Chunk ID: {source.chunkId}, Score: {source.score.toFixed(4)})
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {/* Metrics Display - only if not currently loading this message and metrics exist */}
+                    {!(isLoading && currentAiMessageIdRef.current === msg.id) &&
+                      (msg.durationMs !== undefined || msg.runesPerSecond !== undefined) && (
+                        <div className="ai-message-metrics">
+                          {msg.durationMs !== undefined && (
+                            <span>Generated in: {(msg.durationMs / 1000).toFixed(2)}s</span>
+                          )}
+                          {msg.durationMs !== undefined && msg.runesPerSecond !== undefined && <span> | </span>}
+                          {msg.runesPerSecond !== undefined && (
+                            <span>Speed: {msg.runesPerSecond.toFixed(1)} runes/s</span>
+                          )}
+                          {msg.isError && <span className="error-indicator"> (Error processing response)</span>}
+                        </div>
+                      )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
           <div ref={messageEndRef} />
         </div>
 

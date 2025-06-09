@@ -83,7 +83,7 @@
     - [x] Iterates through `documentStore`.
     - [x] Calculates cosine similarity between `queryEmbedding` and each chunk's embedding.
     - [x] Sorts chunks by similarity score (descending).
-    - [x] Returns the top `N` most similar `DocumentChunk`s.
+    - [x] Returns
 - [x] **Update `HandleMessage(userInput string) string` for RAG:**
   - [x] **Check `documentStore`:** If empty, log a message and proceed with a non-RAG call to `askOllamaChatRaw`.
   - [x] **Get Query Embedding:** Call `getOllamaEmbedding` for the `userInput`. Handle errors by emitting an event.
@@ -152,6 +152,12 @@
   - [x] Install `react-markdown` and `remark-gfm` in the frontend.
   - [x] Update `App.tsx` to use `ReactMarkdown` component for AI messages.
   - [x] Configure Vite to handle `react-markdown` dependencies if necessary (e.g., `external` in `vite.config.ts`).
+- [x] **Display AI response generation time and speed:**
+  - [x] Backend: Modify `askOllamaChatRaw` in `app.go` to calculate and return duration (ms) and speed (runes/sec) in the final `OllamaStreamEvent`.
+  - [x] Frontend: Update `Message` and `OllamaStreamEventPayload` interfaces in `App.tsx`.
+  - [x] Frontend: Adjust `ollamaStreamEvent` listener in `App.tsx` to store metrics from the final event.
+  - [x] Frontend: Render metrics (duration, speed, error indicator) below AI messages in `App.tsx`.
+  - [x] Frontend: Add CSS for `.ai-message-metrics`, `.ai-message-extras`, and `.error-indicator` in `App.css`.
 - [ ] **Comprehensive Testing:**
   - [ ] Test with various `.txt` files (empty, large, different encodings if applicable).
   - [ ] Test with different folder structures.
