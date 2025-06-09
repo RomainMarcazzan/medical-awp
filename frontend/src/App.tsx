@@ -62,7 +62,8 @@ function App() {
     */
 
     const unlistenOllama = EventsOn("ollamaStreamEvent", (eventData: OllamaStreamEventPayload) => {
-      console.log("JS: ollamaStreamEvent received in listener:", JSON.stringify(eventData));
+      // Removed the verbose log for every chunk:
+      // console.log("JS: ollamaStreamEvent received in listener:", JSON.stringify(eventData));
 
       if (eventData.done) {
         // Only process "done" if we are still expecting it for a specific message

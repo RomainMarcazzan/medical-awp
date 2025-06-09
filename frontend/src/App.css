@@ -114,7 +114,6 @@
   margin-top: 5px;
   margin-left: 10px; /* Align with AI message padding */
   padding: 5px 0;
-  border-top: 1px solid #444; /* Separator line */
 }
 
 .ai-message-metrics {
