@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	ollamaApiUrl       = "http://localhost:11434/api" // Base URL for Ollama API
-	chatModelName      = "llama3"                     // Model for chat completions
-	embeddingModelName = "nomic-embed-text"           // Model for generating embeddings
+	ollamaApiUrl          = "http://localhost:11434/api" // Base URL for Ollama API
+	chatModelName         = "llama3"                     // Model for chat completions
+	embeddingModelName    = "nomic-embed-text"           // Model for generating embeddings
+	ragRelevanceThreshold = 0.5                          // Minimum relevance score to use RAG context
 )
 
 // DocumentChunk defines the structure for a piece of text from a document.
@@ -585,44 +586,49 @@ func (a *App) HandleMessage(userInput string) error {
 		runtime.EventsEmit(a.ctx, "ragSourcesEvent", sourceInfos)
 	} else {
 		log.Println("No RAG sources found to emit.")
+		// Emit an empty slice if no sources are found, so frontend can clear previous sources
+		runtime.EventsEmit(a.ctx, "ragSourcesEvent", []SourceInfo{})
 	}
 
-	// 3. Construct context from relevant chunks
-	var contextBuilder strings.Builder
-	if len(relevantChunks) > 0 {
-		contextBuilder.WriteString("Use the following context to answer the user's question:\n\n")
+	// 3. Construct context from relevant chunks if they meet the threshold
+	var finalPrompt string
+	useRAGContext := false
+	if len(relevantChunks) > 0 && relevantChunks[0].Score >= ragRelevanceThreshold {
+		useRAGContext = true
+	}
+
+	if useRAGContext {
+		var contextBuilder strings.Builder
+		contextBuilder.WriteString("Use the following context to answer the user's question:\\n\\n")
 		for i, chunk := range relevantChunks {
-			contextBuilder.WriteString(fmt.Sprintf("Context from document '%s' (Chunk %d, Relevance: %.2f):\n", chunk.SourceFile, chunk.ID, chunk.Score))
+			// Only include chunks that meet the threshold, though findRelevantChunks already sorts them
+			// and we are primarily concerned with the top one for deciding to use RAG at all.
+			// For simplicity here, if we decide to use RAG, we use all chunks returned by findRelevantChunks.
+			// A more advanced strategy could filter chunks within the loop based on individual scores.
+			contextBuilder.WriteString(fmt.Sprintf("Context from document '%s' (Chunk %d, Relevance: %.2f):\\n", chunk.SourceFile, chunk.ID, chunk.Score))
 			contextBuilder.WriteString(chunk.Text)
 			if i < len(relevantChunks)-1 {
-				contextBuilder.WriteString("\n\n---\n\n") // Separator between chunks
+				contextBuilder.WriteString("\\n\\n---\\n\\n") // Separator between chunks
 			} else {
-				contextBuilder.WriteString("\n\n")
+				contextBuilder.WriteString("\\n\\n")
 			}
 		}
-		log.Printf("Constructed RAG context (length: %d chars)", contextBuilder.Len())
+		contextBuilder.WriteString(fmt.Sprintf("User's question: %s", userInput))
+		finalPrompt = contextBuilder.String()
+		log.Printf("Constructed RAG context (length: %d chars) as top score %.4f >= %.2f", len(finalPrompt), relevantChunks[0].Score, ragRelevanceThreshold)
 	} else {
-		log.Println("No relevant chunks found or RAG context is empty.")
+		if len(relevantChunks) > 0 { // Relevant chunks were found, but score was too low
+			log.Printf("Relevant chunks found, but top score %.4f < %.2f. Skipping RAG context. Using original user input.", relevantChunks[0].Score, ragRelevanceThreshold)
+		} else { // No relevant chunks were found
+			log.Println("No relevant chunks found. Using original user input.")
+		}
+		finalPrompt = userInput
 	}
 
-	// 4. Formulate the prompt for the LLM
-	var llmPrompt string
-	if contextBuilder.Len() > 0 {
-		llmPrompt = contextBuilder.String() + "User's question: " + userInput
-	} else {
-		llmPrompt = userInput // No RAG context, just send the raw user input
-	}
-
-	// 5. Prepare messages for Ollama
-	messages := []OllamaChatMessage{
-		// Optional: Add a system prompt here if desired
-		// {Role: "system", Content: "You are a helpful assistant. Please use the provided context to answer the user's question. If the context is not relevant, say so."},
-		{Role: "user", Content: llmPrompt},
-	}
-
-	// 6. Call askOllamaChatRaw in a goroutine to handle streaming
-	log.Printf("Calling askOllamaChatRaw with LLM prompt (first 100 chars of user content): %s...", llmPrompt[:min(len(llmPrompt), 100)])
+	// 4. Call the LLM with the (potentially augmented) prompt
+	messages := []OllamaChatMessage{{Role: "user", Content: finalPrompt}}
+	log.Printf("Calling askOllamaChatRaw with LLM prompt (first 100 chars of user content): %s...", finalPrompt[:min(len(finalPrompt), 100)])
 	go a.askOllamaChatRaw(messages)
 
-	return nil // Indicate success for the synchronous part of HandleMessage
+	return nil
 }

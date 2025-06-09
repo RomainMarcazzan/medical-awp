@@ -159,6 +159,11 @@
   - [x] Frontend: Adjust `ollamaStreamEvent` listener in `App.tsx` to store metrics from the final event.
   - [x] Frontend: Render metrics (duration, speed, error indicator) below AI messages in `App.tsx`.
   - [x] Frontend: Add CSS for `.ai-message-metrics`, `.ai-message-extras`, and `.error-indicator` in `App.css`.
+- [x] **Refine RAG Contextualization Logic:**
+  - [x] Add `ragRelevanceThreshold` constant in `app.go`.
+  - [x] Modify `HandleMessage` in `app.go` to use the threshold:
+    - [x] If top chunk's score >= threshold, use augmented RAG prompt.
+    - [x] Else (score < threshold or no relevant chunks), use original user input.
 - [ ] **Comprehensive Testing:**
   - [ ] Test RAG source display thoroughly.
   - [ ] Test with various `.txt` files (empty, large, different encodings if applicable).
