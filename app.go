@@ -27,6 +27,8 @@ const (
 	chatModelName         = "llama3"                     // Model for chat completions
 	embeddingModelName    = "nomic-embed-text"           // Model for generating embeddings
 	ragRelevanceThreshold = 0.5                          // Minimum relevance score to use RAG context
+	defaultChunkSizeChars = 1000                         // Target chunk size in characters for recursive splitting
+	defaultOverlapChars   = 100                          // Overlap in characters for recursive splitting
 )
 
 // DocumentChunk defines the structure for a piece of text from a document.
@@ -184,41 +186,175 @@ func min(x, y int) int {
 	return y
 }
 
-// chunkText splits a given text into smaller chunks based on word count.
-// chunkSize is the number of words per chunk.
-// overlap is the number of words to overlap between consecutive chunks.
-func chunkText(text string, chunkSize int, overlap int) []string {
-	if chunkSize <= 0 {
-		chunkSize = 200 // Default chunk size in words
+var defaultRecursiveSeparators = []string{"\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""}
+
+// fixedLengthChunker splits text into chunks of a fixed character size with overlap.
+// This is typically the base case for recursive splitting.
+func fixedLengthChunker(text string, chunkSizeChars int, overlapChars int) []string {
+	if text == "" || chunkSizeChars <= 0 {
+		return []string{}
 	}
-	if overlap < 0 {
-		overlap = 0 // Default overlap in words
+	if overlapChars < 0 {
+		overlapChars = 0
 	}
-	if overlap >= chunkSize {
-		overlap = chunkSize / 4 // Ensure overlap is less than chunk size, e.g., 25% if invalid
+	if overlapChars >= chunkSizeChars { // Ensure overlap is less than chunk size
+		overlapChars = chunkSizeChars / 5
+		if overlapChars == 0 && chunkSizeChars > 0 { // Avoid overlap of 0 if chunksize is very small but >0
+			overlapChars = 1
+		}
+	}
+	if chunkSizeChars <= overlapChars && chunkSizeChars > 0 { // If chunksize is too small for meaningful overlap
+		// In this scenario, non-overlapping chunks are better or just one chunk.
+		// For simplicity, let's make it non-overlapping if chunkSize is too small for the given overlap.
+		overlapChars = 0
 	}
 
-	words := strings.Fields(text)
 	var chunks []string
+	runes := []rune(text)
+	nRunes := len(runes)
+	start := 0
 
-	if len(words) == 0 {
-		return chunks
-	}
-
-	for i := 0; i < len(words); {
-		end := i + chunkSize
-		if end > len(words) {
-			end = len(words)
+	for start < nRunes {
+		end := start + chunkSizeChars
+		if end > nRunes {
+			end = nRunes
 		}
-		chunks = append(chunks, strings.Join(words[i:end], " "))
+		chunks = append(chunks, string(runes[start:end]))
 
-		i += chunkSize - overlap
-		if i >= len(words) && end < len(words) { // Ensure the very last part is captured if loop step overshoots
+		if end == nRunes {
+			break
 		}
-		// If i steps into the last chunk territory but doesn't cover it fully, the next iteration's `end = len(words)` will handle it.
-		// The loop condition `i < len(words)` ensures we don't go out of bounds for `words[i:end]` start.
+
+		nextStart := start + chunkSizeChars - overlapChars
+		if nextStart <= start && nRunes > end { // Ensure progress if chunkSize is small or overlap is large relative to chunkSize
+			// This can happen if chunkSize - overlapChars <= 0.
+			// To prevent infinite loops with bad parameters (though validated above), force progress.
+			nextStart = start + 1
+		}
+		start = nextStart
+
+		if start >= nRunes { // Optimization: if next start is already at or beyond the end.
+			break
+		}
 	}
+	// Filter out potentially empty last chunks if logic allows, though current loop should prevent it.
+	// And ensure no purely whitespace chunks if desired (not implemented here for simplicity).
 	return chunks
+}
+
+func doRecursiveSplit(text string, chunkSizeChars int, overlapChars int, separators []string) []string {
+	var finalChunks []string
+	if text == "" {
+		return finalChunks
+	}
+
+	// If text is already small enough, or no more separators to try (except character splitting)
+	if utf8.RuneCountInString(text) <= chunkSizeChars && (len(separators) == 0 || (len(separators) == 1 && separators[0] == "")) {
+		if text != "" { // Avoid adding empty string as a chunk
+			finalChunks = append(finalChunks, text)
+		}
+		return finalChunks
+	}
+
+	if len(separators) == 0 { // Should ideally be caught by the "" separator logic
+		return fixedLengthChunker(text, chunkSizeChars, overlapChars)
+	}
+
+	currentSeparator := separators[0]
+	remainingSeparators := separators[1:]
+
+	if currentSeparator == "" { // Base case: character splitting
+		return fixedLengthChunker(text, chunkSizeChars, overlapChars)
+	}
+
+	splits := strings.Split(text, currentSeparator)
+	var goodParts []string // Parts that are either small enough or recursively split
+
+	for _, part := range splits {
+		if part == "" { // Skip empty parts that can result from split
+			continue
+		}
+		if utf8.RuneCountInString(part) > chunkSizeChars {
+			// This part is too big, recurse with the next set of separators
+			recursedChunks := doRecursiveSplit(part, chunkSizeChars, overlapChars, remainingSeparators)
+			goodParts = append(goodParts, recursedChunks...)
+		} else {
+			// This part is small enough
+			goodParts = append(goodParts, part)
+		}
+	}
+
+	// Merge `goodParts` using `currentSeparator`, trying to respect `chunkSizeChars`.
+	// This merging step is crucial. The overlap is primarily handled by the fixedLengthChunker.
+	// Here, we are just trying to group small pieces.
+	var currentBuffer strings.Builder
+	currentBufferLenRunes := 0
+	for _, part := range goodParts { // Changed i to _
+		partLenRunes := utf8.RuneCountInString(part)
+		sepLenRunes := 0
+		if currentBuffer.Len() > 0 {
+			sepLenRunes = utf8.RuneCountInString(currentSeparator)
+		}
+
+		if currentBufferLenRunes+sepLenRunes+partLenRunes > chunkSizeChars && currentBuffer.Len() > 0 {
+			// Finalize currentBuffer
+			finalChunks = append(finalChunks, currentBuffer.String())
+			currentBuffer.Reset()
+			currentBufferLenRunes = 0
+			// Start new buffer with current part
+			currentBuffer.WriteString(part)
+			currentBufferLenRunes = partLenRunes
+		} else {
+			// Add to current buffer
+			if currentBuffer.Len() > 0 {
+				currentBuffer.WriteString(currentSeparator)
+				currentBufferLenRunes += sepLenRunes
+			}
+			currentBuffer.WriteString(part)
+			currentBufferLenRunes += partLenRunes
+		}
+	}
+	// Add any remaining content in the buffer
+	if currentBuffer.Len() > 0 {
+		finalChunks = append(finalChunks, currentBuffer.String())
+	}
+
+	// Filter out empty strings that might have crept in, though logic should prevent most.
+	var nonEmptyChunks []string
+	for _, chunk := range finalChunks {
+		if strings.TrimSpace(chunk) != "" {
+			nonEmptyChunks = append(nonEmptyChunks, chunk)
+		}
+	}
+	return nonEmptyChunks
+}
+
+// chunkTextRecursive splits text into chunks aiming for chunkSizeChars, using separators and then character-based splitting with overlap.
+func chunkTextRecursive(text string, chunkSizeChars int, overlapChars int) []string {
+	// Validate inputs
+	if chunkSizeChars <= 0 {
+		log.Printf("Warning: chunkTextRecursive called with chunkSizeChars <= 0 (%d). Returning single chunk or empty.", chunkSizeChars)
+		if text == "" {
+			return []string{}
+		}
+		return []string{text}
+	}
+	if overlapChars < 0 {
+		overlapChars = 0
+	}
+	// Ensure overlap is reasonably less than chunk size for fixedLengthChunker
+	if overlapChars >= chunkSizeChars {
+		overlapChars = chunkSizeChars / 5            // Default to 20% overlap if invalid
+		if overlapChars == 0 && chunkSizeChars > 0 { // Avoid overlap of 0 if chunksize is very small but >0
+			overlapChars = 1
+		}
+	}
+	if chunkSizeChars > 0 && chunkSizeChars <= overlapChars { // If chunksize is too small for meaningful overlap
+		log.Printf("Warning: chunkSizeChars (%d) is less than or equal to overlapChars (%d). Setting overlapChars to 0 for this call.", chunkSizeChars, overlapChars)
+		overlapChars = 0
+	}
+
+	return doRecursiveSplit(text, chunkSizeChars, overlapChars, defaultRecursiveSeparators)
 }
 
 // LoadPersonalData is a Wails-bindable method that prompts the user to select a directory,
@@ -283,13 +419,21 @@ func (a *App) LoadPersonalData() string {
 			}
 
 			// Define chunking parameters (could be made configurable later)
-			chunkSizeWords := 200 // Example: 200 words per chunk
-			overlapWords := 20    // Example: 20 words overlap
+			// Old word-based chunking:
+			// chunkSizeWords := 200 // Example: 200 words per chunk
+			// overlapWords := 20    // Example: 20 words overlap
+			// textChunks := chunkText(string(content), chunkSizeWords, overlapWords)
 
-			textChunks := chunkText(string(content), chunkSizeWords, overlapWords)
-			log.Printf("File %s split into %d chunks.", filePath, len(textChunks))
+			// New character-based recursive chunking:
+			textChunks := chunkTextRecursive(string(content), defaultChunkSizeChars, defaultOverlapChars)
+			log.Printf("File %s split into %d chunks using recursive strategy.", filePath, len(textChunks))
 
 			for _, chunkText := range textChunks {
+				if strings.TrimSpace(chunkText) == "" {
+					log.Printf("Skipping empty or whitespace-only chunk from file %s", filePath)
+					continue // Skip empty chunks
+				}
+
 				embedding, err := a.getOllamaEmbedding(chunkText)
 				if err != nil {
 					log.Printf("Error getting embedding for a chunk from %s: %v. Skipping chunk.", filePath, err)

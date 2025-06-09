@@ -162,7 +162,7 @@
 - [x] **Refine RAG Contextualization Logic:**
   - [x] Add `ragRelevanceThreshold` constant in `app.go`.
   - [x] Modify `HandleMessage` in `app.go` to use the threshold:
-    - [x] If top chunk's score >= threshold, use augmented RAG prompt.
+    - [x] If top chunk\'s score >= threshold, use augmented RAG prompt.
     - [x] Else (score < threshold or no relevant chunks), use original user input.
 - [ ] **Comprehensive Testing:**
   - [ ] Test RAG source display thoroughly.
@@ -173,9 +173,14 @@
   - [ ] Test edge cases for chunking and embedding.
   - [ ] Test error handling for Ollama API calls (e.g., Ollama service down, model not available).
   - [ ] Test UI responsiveness and error display.
-- [ ] **Refine Chunking Strategy:**
-  - [ ] Experiment with `chunkSize` and `overlap` for optimal RAG performance.
-  - [ ] Consider more advanced chunking methods if needed (e.g., sentence splitting).
+- [x] **Refine Chunking Strategy:**
+  - [x] ~~Experiment with `chunkSize` and `overlap` for optimal RAG performance.~~ (Superseded by recursive char splitting)
+  - [x] ~~Consider more advanced chunking methods if needed (e.g., sentence splitting).~~ (Implemented custom recursive character splitting)
+  - [x] **Implement Recursive Character-Based Chunking:**
+    - [x] Added `defaultChunkSizeChars` and `defaultOverlapChars` constants in `app.go`.
+    - [x] Implemented `fixedLengthChunker`, `doRecursiveSplit`, and `chunkTextRecursive` functions in `app.go`.
+    - [x] Updated `LoadPersonalData` to use `chunkTextRecursive`.
+    - [x] Added `defaultRecursiveSeparators` list.
 - [ ] **Refine Prompt Engineering:**
   - [ ] Optimize the augmented prompt structure for clarity and effectiveness.
 - [ ] **Improve Error Handling and User Feedback:**
